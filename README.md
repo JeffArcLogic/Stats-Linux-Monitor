@@ -15,6 +15,16 @@ The original Stats app remains the foundation for local macOS monitoring, menu b
 - Render Stats-style server popups with CPU, memory, disk, network, optional GPU/sensors, uptime, and top processes.
 - Keep the existing local macOS Stats modules intact.
 
+## Screenshots
+
+Linux server menu bar items:
+
+![Linux server menu bar items](docs/screenshots/linux-server-menu-bar.png)
+
+Linux server popup:
+
+<img src="docs/screenshots/linux-server-popup.png" alt="Linux server popup" width="284">
+
 ## Goals and limitations
 
 This fork is intentionally different from upstream Stats:
