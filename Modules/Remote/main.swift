@@ -89,6 +89,39 @@ public struct LinuxServerSnapshot: Codable {
     public let gpu: [LinuxGPUStats]?
     public let processes: [LinuxProcessInfo]
 
+    private enum CodingKeys: String, CodingKey {
+        case schema
+        case host
+        case timestamp
+        case uptimeSec
+        case cpu
+        case load
+        case memory
+        case swap
+        case disks
+        case network
+        case temperature
+        case gpu
+        case processes
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.schema = try container.decode(String.self, forKey: .schema)
+        self.host = try container.decode(LinuxHostInfo.self, forKey: .host)
+        self.timestamp = try container.decode(Date.self, forKey: .timestamp)
+        self.uptimeSec = try container.decode(Double.self, forKey: .uptimeSec)
+        self.cpu = try container.decode(LinuxCPUStats.self, forKey: .cpu)
+        self.load = try container.decode(LinuxLoadStats.self, forKey: .load)
+        self.memory = try container.decode(LinuxMemoryStats.self, forKey: .memory)
+        self.swap = try container.decode(LinuxSwapStats.self, forKey: .swap)
+        self.disks = try container.decode([LinuxDiskStats].self, forKey: .disks)
+        self.network = try container.decode([LinuxNetStats].self, forKey: .network)
+        self.temperature = try container.decodeIfPresent([LinuxSensorStats].self, forKey: .temperature) ?? []
+        self.gpu = try container.decodeIfPresent([LinuxGPUStats].self, forKey: .gpu)
+        self.processes = try container.decode([LinuxProcessInfo].self, forKey: .processes)
+    }
+
     public var diskUsagePercent: Double {
         self.disks.map(\.usagePercent).max() ?? 0
     }

@@ -64,8 +64,27 @@ func (c *Collector) Snapshot() (Snapshot, error) {
 	snapshot.CPU = c.readCPU()
 	snapshot.Memory, snapshot.Swap = readMemory()
 	snapshot.Network = c.readNetwork(now)
+	snapshot.normalize()
 	c.lastSnapshot = now
 	return snapshot, nil
+}
+
+func (s *Snapshot) normalize() {
+	if s.Disks == nil {
+		s.Disks = []DiskStats{}
+	}
+	if s.Network == nil {
+		s.Network = []NetStats{}
+	}
+	if s.Temperature == nil {
+		s.Temperature = []SensorStats{}
+	}
+	if s.GPU == nil {
+		s.GPU = []GPUStats{}
+	}
+	if s.Processes == nil {
+		s.Processes = []ProcessInfo{}
+	}
 }
 
 func (c *Collector) readCPU() CPUStats {

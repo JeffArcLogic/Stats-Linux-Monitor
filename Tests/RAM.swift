@@ -106,6 +106,27 @@ class LinuxServers: XCTestCase {
         XCTAssertEqual(snapshot.networkBytesPerSecond, 30)
     }
 
+    func testSnapshotDecodingAllowsNullTemperature() throws {
+        let json = """
+        {
+          "schema": "stats.linux.snapshot.v1",
+          "host": {"name": "nas", "os": "Ubuntu 24.04", "kernel": "6.8.0", "platform": "amd64"},
+          "timestamp": "2026-07-05T20:00:00Z",
+          "uptimeSec": 120.5,
+          "cpu": {"usagePercent": 32.5, "cores": 8, "perCore": [30, 35]},
+          "load": {"one": 1.2, "five": 1.0, "fifteen": 0.7},
+          "memory": {"totalBytes": 1000, "usedBytes": 610, "availableBytes": 390, "usagePercent": 61},
+          "swap": {"totalBytes": 100, "usedBytes": 10, "usagePercent": 10},
+          "disks": [],
+          "network": [],
+          "temperature": null,
+          "processes": []
+        }
+        """
+        let snapshot = try LinuxServerClient.decoder.decode(LinuxServerSnapshot.self, from: Data(json.utf8))
+        XCTAssertEqual(snapshot.temperature.count, 0)
+    }
+
     func testConfigNormalizesHostWithoutScheme() throws {
         let config = LinuxServerConfig(id: "test", name: "NAS", url: "nas.tailnet.ts.net:9783")
         XCTAssertEqual(config.endpoint?.scheme, "http")
