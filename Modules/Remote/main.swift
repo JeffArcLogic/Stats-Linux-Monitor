@@ -678,6 +678,6 @@ private final class LinuxServerTrayView: NSView {
     private func usageColor(_ percent: Double) -> NSColor {
         if percent >= 90 { return .systemRed }
         if percent >= 75 { return .systemOrange }
-        return .controlAccentColor
+        return self.primaryTextColor
     }
 }
