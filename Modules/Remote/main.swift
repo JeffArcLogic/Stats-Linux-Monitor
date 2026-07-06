@@ -487,6 +487,20 @@ private final class LinuxServerStatusItem: NSObject {
 }
 
 private final class LinuxServerTrayView: NSView {
+    private struct Metric {
+        let label: String
+        let value: Double
+    }
+
+    private enum Layout {
+        static let width: CGFloat = 118
+        static let sidePadding: CGFloat = 4
+        static let titleY: CGFloat = 15
+        static let metricLabelY: CGFloat = 9
+        static let metricValueY: CGFloat = 0
+        static let statusDotSize: CGFloat = 4
+    }
+
     var onClick: (() -> Void)?
     var onRightClick: ((NSEvent) -> Void)?
     private var state: LinuxServerState?
@@ -494,7 +508,7 @@ private final class LinuxServerTrayView: NSView {
 
     init(config: LinuxServerConfig) {
         self.config = config
-        super.init(frame: NSRect(x: 0, y: 0, width: 92, height: Constants.Widget.height))
+        super.init(frame: NSRect(x: 0, y: 0, width: Layout.width, height: Constants.Widget.height))
         self.wantsLayer = true
     }
 
@@ -524,31 +538,116 @@ private final class LinuxServerTrayView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-        let name = String(self.config.displayName.prefix(12))
+
+        let name = self.truncatedServerName(self.config.displayName)
         let online = self.state?.online ?? false
         let snapshot = self.state?.snapshot
-        let titleColor: NSColor = online ? .labelColor : .systemRed
-        let muted = NSColor.secondaryLabelColor
+        let titleColor: NSColor = online ? self.primaryTextColor : .systemRed
+        let muted = self.mutedTextColor
+        let dotColor: NSColor = online ? .systemGreen : .systemRed
 
-        drawText(name, x: 3, y: 12, width: self.bounds.width - 6, size: 7, color: titleColor, weight: .semibold)
+        self.drawStatusDot(color: dotColor)
+        drawText(
+            name,
+            x: Layout.sidePadding + Layout.statusDotSize + 3,
+            y: Layout.titleY,
+            width: self.bounds.width - ((Layout.sidePadding * 2) + Layout.statusDotSize + 3),
+            size: 6.5,
+            color: titleColor,
+            weight: .semibold,
+            alignment: .center
+        )
+
         if let snapshot {
-            drawText("C \(Int(snapshot.cpu.usagePercent.rounded()))", x: 3, y: 1, width: 24, size: 10, color: usageColor(snapshot.cpu.usagePercent), weight: .regular)
-            drawText("M \(Int(snapshot.memory.usagePercent.rounded()))", x: 31, y: 1, width: 24, size: 10, color: usageColor(snapshot.memory.usagePercent), weight: .regular)
-            drawText("D \(Int(snapshot.diskUsagePercent.rounded()))", x: 59, y: 1, width: 30, size: 10, color: usageColor(snapshot.diskUsagePercent), weight: .regular)
+            self.drawMetrics([
+                Metric(label: "CPU", value: snapshot.cpu.usagePercent),
+                Metric(label: "RAM", value: snapshot.memory.usagePercent),
+                Metric(label: "SSD", value: snapshot.diskUsagePercent)
+            ])
         } else {
-            drawText("offline", x: 3, y: 1, width: self.bounds.width - 6, size: 10, color: muted, weight: .regular)
+            drawText(
+                "offline",
+                x: Layout.sidePadding,
+                y: Layout.metricValueY + 1,
+                width: self.bounds.width - (Layout.sidePadding * 2),
+                size: 10,
+                color: muted,
+                weight: .semibold,
+                alignment: .center
+            )
         }
     }
 
-    private func drawText(_ value: String, x: CGFloat, y: CGFloat, width: CGFloat, size: CGFloat, color: NSColor, weight: NSFont.Weight) {
+    private func drawMetrics(_ metrics: [Metric]) {
+        let width = (self.bounds.width - (Layout.sidePadding * 2)) / CGFloat(metrics.count)
+        for (index, metric) in metrics.enumerated() {
+            let x = Layout.sidePadding + (CGFloat(index) * width)
+            drawText(
+                metric.label,
+                x: x,
+                y: Layout.metricLabelY,
+                width: width,
+                size: 6,
+                color: self.mutedTextColor,
+                weight: .semibold,
+                alignment: .center
+            )
+            drawText(
+                "\(Int(metric.value.rounded()))%",
+                x: x,
+                y: Layout.metricValueY,
+                width: width,
+                size: 9.5,
+                color: usageColor(metric.value),
+                weight: .semibold,
+                alignment: .center
+            )
+        }
+    }
+
+    private func drawStatusDot(color: NSColor) {
+        color.setFill()
+        let rect = NSRect(
+            x: Layout.sidePadding,
+            y: Layout.titleY + 2,
+            width: Layout.statusDotSize,
+            height: Layout.statusDotSize
+        )
+        NSBezierPath(ovalIn: rect).fill()
+    }
+
+    private func truncatedServerName(_ value: String) -> String {
+        if value.count <= 16 { return value }
+        return "\(value.prefix(13))..."
+    }
+
+    private func drawText(
+        _ value: String,
+        x: CGFloat,
+        y: CGFloat,
+        width: CGFloat,
+        size: CGFloat,
+        color: NSColor,
+        weight: NSFont.Weight,
+        alignment: NSTextAlignment
+    ) {
         let paragraph = NSMutableParagraphStyle()
-        paragraph.alignment = .left
+        paragraph.alignment = alignment
+        paragraph.lineBreakMode = .byTruncatingTail
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedSystemFont(ofSize: size, weight: weight),
             .foregroundColor: color,
             .paragraphStyle: paragraph
         ]
         NSAttributedString(string: value, attributes: attributes).draw(in: NSRect(x: x, y: y, width: width, height: size + 2))
+    }
+
+    private var primaryTextColor: NSColor {
+        isDarkMode ? .white : .textColor
+    }
+
+    private var mutedTextColor: NSColor {
+        isDarkMode ? NSColor.white.withAlphaComponent(0.72) : .secondaryLabelColor
     }
 
     private func usageColor(_ percent: Double) -> NSColor {
