@@ -17,6 +17,10 @@ import CoreWLAN
 // swiftlint:disable control_statement
 extension CWPHYMode: @retroactive CustomStringConvertible {
     public var description: String {
+        if self.rawValue == 7 {
+            return "802.11be"
+        }
+
         switch(self) {
         case .mode11a:  return "802.11a"
         case .mode11ac: return "802.11ac"
@@ -24,7 +28,6 @@ extension CWPHYMode: @retroactive CustomStringConvertible {
         case .mode11g:  return "802.11g"
         case .mode11n:  return "802.11n"
         case .mode11ax: return "802.11ax"
-        case .mode11be: return "802.11be"
         case .modeNone: return "none"
         @unknown default: return "unknown"
         }
