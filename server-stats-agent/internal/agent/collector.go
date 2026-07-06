@@ -204,19 +204,29 @@ func readDisks() []DiskStats {
 		if err := syscall.Statfs(mount, &fs); err != nil {
 			continue
 		}
-		total := uint64(fs.Blocks) * uint64(fs.Bsize)
-		free := uint64(fs.Bavail) * uint64(fs.Bsize)
-		if total == 0 {
+		total, used, free, usage, ok := diskUsageFromStatfs(uint64(fs.Blocks), uint64(fs.Bfree), uint64(fs.Bavail), int64(fs.Bsize))
+		if !ok {
 			continue
 		}
-		used := total - free
 		out = append(out, DiskStats{
 			Mountpoint: mount, Device: fields[0], FSType: fields[2],
-			TotalBytes: total, UsedBytes: used, FreeBytes: free, UsagePercent: percent(used, total),
+			TotalBytes: total, UsedBytes: used, FreeBytes: free, UsagePercent: usage,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Mountpoint < out[j].Mountpoint })
 	return out
+}
+
+func diskUsageFromStatfs(blocks, bfree, bavail uint64, bsize int64) (uint64, uint64, uint64, float64, bool) {
+	if blocks == 0 || bsize <= 0 || bfree > blocks {
+		return 0, 0, 0, 0, false
+	}
+
+	blockSize := uint64(bsize)
+	total := blocks * blockSize
+	used := (blocks - bfree) * blockSize
+	free := bavail * blockSize
+	return total, used, free, percent(used, used+free), true
 }
 
 func readSensors() []SensorStats {

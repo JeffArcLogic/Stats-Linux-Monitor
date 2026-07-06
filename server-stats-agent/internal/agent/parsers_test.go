@@ -66,3 +66,22 @@ Inter-|   Receive                                                |  Transmit
 		t.Fatalf("unexpected counters: %+v", counters)
 	}
 }
+
+func TestDiskUsageFromStatfsUsesAvailableBlocksForPressure(t *testing.T) {
+	total, used, free, usage, ok := diskUsageFromStatfs(1000, 450, 400, 1024)
+	if !ok {
+		t.Fatal("expected disk stats")
+	}
+	if total != 1024000 {
+		t.Fatalf("expected total bytes to keep filesystem size, got %d", total)
+	}
+	if used != 563200 {
+		t.Fatalf("expected used bytes to exclude reserved blocks, got %d", used)
+	}
+	if free != 409600 {
+		t.Fatalf("expected free bytes from available blocks, got %d", free)
+	}
+	if usage < 57.89 || usage > 57.90 {
+		t.Fatalf("expected df-style usage around 57.89%%, got %.4f", usage)
+	}
+}

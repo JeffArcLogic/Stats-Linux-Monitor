@@ -137,8 +137,9 @@ internal class Popup: PopupWrapper {
         row1.spacing = Constants.Popup.spacing * 2
         row1.distribution = .fillEqually
 
+        let diskSubtitle = snapshot.primaryDisk.map { "\(bytes($0.usedBytes)) / \(bytes($0.totalBytes)) · \($0.mountpoint)" } ?? "No disks"
         let row2 = NSStackView(views: [
-            MetricCard(title: "Disk", value: "\(Int(snapshot.diskUsagePercent.rounded()))%", subtitle: snapshot.disks.first?.mountpoint ?? "No disks", percent: snapshot.diskUsagePercent),
+            MetricCard(title: "Disk", value: "\(Int(snapshot.diskUsagePercent.rounded()))%", subtitle: diskSubtitle, percent: snapshot.diskUsagePercent),
             MetricCard(title: "Network", value: bytesPerSecond(snapshot.networkBytesPerSecond), subtitle: "\(snapshot.network.count) interfaces", percent: min(100, snapshot.networkBytesPerSecond / 1_000_000 * 100), accent: .systemBlue)
         ])
         row2.orientation = .horizontal

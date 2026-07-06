@@ -127,6 +127,31 @@ class LinuxServers: XCTestCase {
         XCTAssertEqual(snapshot.temperature.count, 0)
     }
 
+    func testDiskUsagePrefersRootMount() throws {
+        let json = """
+        {
+          "schema": "stats.linux.snapshot.v1",
+          "host": {"name": "itx", "os": "Ubuntu 26.04 LTS", "kernel": "7.0.0", "platform": "amd64"},
+          "timestamp": "2026-07-05T20:00:00Z",
+          "uptimeSec": 120.5,
+          "cpu": {"usagePercent": 32.5, "cores": 8, "perCore": [30, 35]},
+          "load": {"one": 1.2, "five": 1.0, "fifteen": 0.7},
+          "memory": {"totalBytes": 1000, "usedBytes": 610, "availableBytes": 390, "usagePercent": 61},
+          "swap": {"totalBytes": 100, "usedBytes": 10, "usagePercent": 10},
+          "disks": [
+            {"mountpoint": "/boot", "device": "/dev/nvme0n1p2", "fsType": "ext4", "totalBytes": 1000, "usedBytes": 950, "freeBytes": 50, "usagePercent": 95},
+            {"mountpoint": "/", "device": "/dev/mapper/ubuntu--vg-ubuntu--lv", "fsType": "ext4", "totalBytes": 100000, "usedBytes": 57000, "freeBytes": 43000, "usagePercent": 57}
+          ],
+          "network": [],
+          "temperature": [],
+          "processes": []
+        }
+        """
+        let snapshot = try LinuxServerClient.decoder.decode(LinuxServerSnapshot.self, from: Data(json.utf8))
+        XCTAssertEqual(snapshot.primaryDisk?.mountpoint, "/")
+        XCTAssertEqual(snapshot.diskUsagePercent, 57)
+    }
+
     func testConfigNormalizesHostWithoutScheme() throws {
         let config = LinuxServerConfig(id: "test", name: "NAS", url: "nas.tailnet.ts.net:9783")
         XCTAssertEqual(config.endpoint?.scheme, "http")

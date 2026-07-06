@@ -123,7 +123,11 @@ public struct LinuxServerSnapshot: Codable {
     }
 
     public var diskUsagePercent: Double {
-        self.disks.map(\.usagePercent).max() ?? 0
+        self.primaryDisk?.usagePercent ?? 0
+    }
+
+    public var primaryDisk: LinuxDiskStats? {
+        self.disks.first(where: { $0.mountpoint == "/" }) ?? self.disks.max { $0.usagePercent < $1.usagePercent }
     }
 
     public var networkBytesPerSecond: Double {
@@ -493,12 +497,14 @@ private final class LinuxServerTrayView: NSView {
     }
 
     private enum Layout {
-        static let width: CGFloat = 118
-        static let sidePadding: CGFloat = 4
-        static let titleY: CGFloat = 15
-        static let metricLabelY: CGFloat = 9
-        static let metricValueY: CGFloat = 0
+        static let metricWidth: CGFloat = 31
+        static let maxNameWidth: CGFloat = 74
+        static let sidePadding: CGFloat = 3
+        static let gap: CGFloat = 4
+        static let metricLabelY: CGFloat = 12
+        static let metricValueY: CGFloat = 1
         static let statusDotSize: CGFloat = 4
+        static let statusDotGap: CGFloat = 4
     }
 
     var onClick: (() -> Void)?
@@ -508,7 +514,7 @@ private final class LinuxServerTrayView: NSView {
 
     init(config: LinuxServerConfig) {
         self.config = config
-        super.init(frame: NSRect(x: 0, y: 0, width: Layout.width, height: Constants.Widget.height))
+        super.init(frame: NSRect(x: 0, y: 0, width: Self.width(for: config.displayName), height: Constants.Widget.height))
         self.wantsLayer = true
     }
 
@@ -519,8 +525,14 @@ private final class LinuxServerTrayView: NSView {
     func update(_ state: LinuxServerState) {
         self.state = state
         self.config = state.config
-        DispatchQueue.main.async {
+        let updateView = {
+            self.setFrameSize(NSSize(width: Self.width(for: state.config.displayName), height: Constants.Widget.height))
             self.needsDisplay = true
+        }
+        if Thread.isMainThread {
+            updateView()
+        } else {
+            DispatchQueue.main.async(execute: updateView)
         }
     }
 
@@ -539,37 +551,39 @@ private final class LinuxServerTrayView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
 
-        let name = self.truncatedServerName(self.config.displayName)
+        let name = self.config.displayName
         let online = self.state?.online ?? false
         let snapshot = self.state?.snapshot
         let titleColor: NSColor = online ? self.primaryTextColor : .systemRed
         let muted = self.mutedTextColor
         let dotColor: NSColor = online ? .systemGreen : .systemRed
+        let nameWidth = self.nameWidth(for: name)
+        let metricStart = Layout.sidePadding + nameWidth + Layout.gap
 
         self.drawStatusDot(color: dotColor)
         drawText(
             name,
-            x: Layout.sidePadding + Layout.statusDotSize + 3,
-            y: Layout.titleY,
-            width: self.bounds.width - ((Layout.sidePadding * 2) + Layout.statusDotSize + 3),
-            size: 6.5,
+            x: Layout.sidePadding + Layout.statusDotSize + Layout.statusDotGap,
+            y: 7,
+            width: nameWidth - Layout.statusDotSize - Layout.statusDotGap,
+            size: 7,
             color: titleColor,
             weight: .semibold,
-            alignment: .center
+            alignment: .left
         )
 
         if let snapshot {
             self.drawMetrics([
                 Metric(label: "CPU", value: snapshot.cpu.usagePercent),
                 Metric(label: "RAM", value: snapshot.memory.usagePercent),
-                Metric(label: "SSD", value: snapshot.diskUsagePercent)
-            ])
+                Metric(label: "Disk", value: snapshot.diskUsagePercent)
+            ], startX: metricStart)
         } else {
             drawText(
                 "offline",
-                x: Layout.sidePadding,
-                y: Layout.metricValueY + 1,
-                width: self.bounds.width - (Layout.sidePadding * 2),
+                x: metricStart,
+                y: 5,
+                width: self.bounds.width - metricStart - Layout.sidePadding,
                 size: 10,
                 color: muted,
                 weight: .semibold,
@@ -578,28 +592,27 @@ private final class LinuxServerTrayView: NSView {
         }
     }
 
-    private func drawMetrics(_ metrics: [Metric]) {
-        let width = (self.bounds.width - (Layout.sidePadding * 2)) / CGFloat(metrics.count)
+    private func drawMetrics(_ metrics: [Metric], startX: CGFloat) {
         for (index, metric) in metrics.enumerated() {
-            let x = Layout.sidePadding + (CGFloat(index) * width)
+            let x = startX + (CGFloat(index) * Layout.metricWidth)
             drawText(
                 metric.label,
                 x: x,
                 y: Layout.metricLabelY,
-                width: width,
-                size: 6,
+                width: Layout.metricWidth,
+                size: 7,
                 color: self.mutedTextColor,
-                weight: .semibold,
+                weight: .light,
                 alignment: .center
             )
             drawText(
                 "\(Int(metric.value.rounded()))%",
                 x: x,
                 y: Layout.metricValueY,
-                width: width,
-                size: 9.5,
+                width: Layout.metricWidth,
+                size: 12,
                 color: usageColor(metric.value),
-                weight: .semibold,
+                weight: .regular,
                 alignment: .center
             )
         }
@@ -609,16 +622,28 @@ private final class LinuxServerTrayView: NSView {
         color.setFill()
         let rect = NSRect(
             x: Layout.sidePadding,
-            y: Layout.titleY + 2,
+            y: (Constants.Widget.height - Layout.statusDotSize) / 2,
             width: Layout.statusDotSize,
             height: Layout.statusDotSize
         )
         NSBezierPath(ovalIn: rect).fill()
     }
 
-    private func truncatedServerName(_ value: String) -> String {
-        if value.count <= 16 { return value }
-        return "\(value.prefix(13))..."
+    private static func width(for name: String) -> CGFloat {
+        let metricsWidth = Layout.metricWidth * 3
+        let nameWidth = min(Layout.maxNameWidth, max(24, Self.nameSize(name).width + Layout.statusDotSize + Layout.statusDotGap + 1))
+        return Layout.sidePadding + nameWidth + Layout.gap + metricsWidth + Layout.sidePadding
+    }
+
+    private func nameWidth(for name: String) -> CGFloat {
+        min(Layout.maxNameWidth, max(24, Self.nameSize(name).width + Layout.statusDotSize + Layout.statusDotGap + 1))
+    }
+
+    private static func nameSize(_ name: String) -> NSSize {
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedSystemFont(ofSize: 7, weight: .semibold)
+        ]
+        return NSAttributedString(string: name, attributes: attributes).size()
     }
 
     private func drawText(
