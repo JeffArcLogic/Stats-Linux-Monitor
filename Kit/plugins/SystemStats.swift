@@ -478,12 +478,20 @@ extension SystemStats {
 // MARK: - Auth
 
 public class RemoteAuth {
+    private static let hostedRemoteEnabled = false
+
     public var accessToken: String {
-        get { RemoteKeychain.read("access_token") ?? "" }
+        get {
+            guard Self.hostedRemoteEnabled else { return "" }
+            return RemoteKeychain.read("access_token") ?? ""
+        }
         set { RemoteKeychain.write(newValue, for: "access_token") }
     }
     private var refreshToken: String {
-        get { RemoteKeychain.read("refresh_token") ?? "" }
+        get {
+            guard Self.hostedRemoteEnabled else { return "" }
+            return RemoteKeychain.read("refresh_token") ?? ""
+        }
         set { RemoteKeychain.write(newValue, for: "refresh_token") }
     }
     private var clientID: String = "stats"
@@ -522,7 +530,9 @@ public class RemoteAuth {
     }
     
     public init() {
-        RemoteKeychain.migrateFromUserDefaultsIfNeeded()
+        if Self.hostedRemoteEnabled {
+            RemoteKeychain.migrateFromUserDefaultsIfNeeded()
+        }
     }
     
     deinit {
@@ -549,6 +559,10 @@ public class RemoteAuth {
     }
     
     public func login(completion: @escaping (URL?) -> Void) {
+        guard Self.hostedRemoteEnabled else {
+            completion(nil)
+            return
+        }
         self.registerDevice { [weak self] device in
             guard let self else {
                 completion(nil)

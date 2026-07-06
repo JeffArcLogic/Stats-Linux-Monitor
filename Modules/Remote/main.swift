@@ -387,7 +387,7 @@ public class Remote: Module {
     }
 }
 
-private final class LinuxServerStatusItem {
+private final class LinuxServerStatusItem: NSObject {
     private let module: String
     private var config: LinuxServerConfig
     private let statusItem: NSStatusItem
@@ -400,11 +400,13 @@ private final class LinuxServerStatusItem {
         self.select = select
         self.view = LinuxServerTrayView(config: config)
         self.statusItem = NSStatusBar.system.statusItem(withLength: self.view.frame.width)
+        super.init()
         self.statusItem.autosaveName = "\(module)_\(config.id)"
         self.statusItem.button?.image = NSImage()
         self.statusItem.button?.toolTip = config.displayName
         self.statusItem.button?.addSubview(self.view)
         self.view.onClick = { [weak self] in self?.open() }
+        self.view.onRightClick = { [weak self] event in self?.menu(event) }
     }
 
     func update(_ state: LinuxServerState) {
@@ -429,10 +431,31 @@ private final class LinuxServerStatusItem {
             "center": window.frame.width / 2
         ])
     }
+
+    private func menu(_ event: NSEvent) {
+        let menu = NSMenu()
+        let settings = NSMenuItem(title: "Settings", action: #selector(openSettings), keyEquivalent: "")
+        settings.target = self
+        menu.addItem(settings)
+        menu.addItem(NSMenuItem.separator())
+        let quit = NSMenuItem(title: "Quit Stats Linux Monitor", action: #selector(quit), keyEquivalent: "q")
+        quit.target = self
+        menu.addItem(quit)
+        NSMenu.popUpContextMenu(menu, with: event, for: self.view)
+    }
+
+    @objc private func openSettings() {
+        NotificationCenter.default.post(name: .toggleSettings, object: nil, userInfo: ["module": "Linux Servers"])
+    }
+
+    @objc private func quit() {
+        NSApp.terminate(nil)
+    }
 }
 
 private final class LinuxServerTrayView: NSView {
     var onClick: (() -> Void)?
+    var onRightClick: ((NSEvent) -> Void)?
     private var state: LinuxServerState?
     private var config: LinuxServerConfig
 
@@ -455,7 +478,15 @@ private final class LinuxServerTrayView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        if event.modifierFlags.contains(.control) {
+            self.onRightClick?(event)
+            return
+        }
         self.onClick?()
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        self.onRightClick?(event)
     }
 
     override func draw(_ dirtyRect: NSRect) {
