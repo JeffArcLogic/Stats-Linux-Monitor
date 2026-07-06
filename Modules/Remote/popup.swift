@@ -2,550 +2,375 @@
 //  popup.swift
 //  Remote
 //
-//  Created by Serhiy Mytrovtsiy on 20/05/2026.
-//  Using Swift 6.0.
-//  Running on macOS 26.5.
-//
-//  Copyright © 2020 Serhiy Mytrovtsiy. All rights reserved.
-//
 
 import Cocoa
 import Kit
 
-internal enum RemoteItem {
-    case machine(RemoteMachine)
-    case host(RemoteHost)
-    
-    var id: String {
-        switch self {
-        case .machine(let m): return "machine-\(m.id)"
-        case .host(let h): return "host-\(h.id)"
-        }
-    }
-    
-    var name: String {
-        switch self {
-        case .machine(let m): return m.displayName
-        case .host(let h): return h.displayName
-        }
-    }
-    
-    var url: URL? {
-        switch self {
-        case .machine(let m): return m.uri
-        case .host(let h): return h.uri
-        }
-    }
-    
-    var status: Bool {
-        switch self {
-        case .machine(let m): return m.online
-        case .host(let h): return h.lastStatus?.lowercased() == "up"
-        }
-    }
-}
-
 internal class Popup: PopupWrapper {
-    private let loginPrompt = EmptyView(height: 60, msg: localizedString("Login to System Stats to see your devices"))
-    
-    private var groups: NSStackView = {
-        let view = NSStackView()
-        view.spacing = Constants.Popup.spacing*2
-        view.orientation = .vertical
-        return view
-    }()
-    
+    private var states: [String: LinuxServerState] = [:]
+    private var selectedID: String?
+    private var stream: LinuxServerStream?
     private var visible: Bool = false
-    private var streams: [String: RemoteMachineStream] = [:]
-    private var currentMachineIDs: [String] = []
-    
+
     public init(_ module: ModuleType) {
         super.init(module, frame: NSRect(x: 0, y: 0, width: Constants.Popup.width, height: 0))
-        
         self.orientation = .vertical
-        self.distribution = .fill
-        self.spacing = 0
+        self.spacing = Constants.Popup.spacing * 2
+        self.edgeInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
+        self.render()
     }
-    
+
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
-    
-    private func recalculateHeight() {
-        let h = self.loginPrompt.window != nil ? self.loginPrompt.fittingSize.height : self.groups.fittingSize.height
-        if h > 0 && self.frame.size.height != h {
-            self.setFrameSize(NSSize(width: self.frame.width, height: h))
-            self.sizeCallback?(self.frame.size)
-        }
-    }
-    
-    public func authorizationStatus(_ status: Bool) {
-        if !status {
-            self.addArrangedSubview(self.loginPrompt)
-            self.groups.removeFromSuperview()
-        } else {
-            self.loginPrompt.removeFromSuperview()
-            self.addArrangedSubview(self.groups)
-        }
-        self.recalculateHeight()
-    }
-    
+
     public override func appear() {
         super.appear()
         self.visible = true
-        self.syncStreams()
+        self.startStream()
     }
-    
+
     public override func disappear() {
         super.disappear()
         self.visible = false
-        self.stopStreams()
+        self.stopStream()
     }
-    
-    private func syncStreams() {
-        guard self.visible else { return }
-        let ids = Set(self.currentMachineIDs)
-        
-        for (id, stream) in self.streams where !ids.contains(id) {
-            stream.stop()
-            self.streams.removeValue(forKey: id)
-        }
-        
-        for id in ids where self.streams[id] == nil {
-            let stream = RemoteMachineStream(machineID: id) { [weak self] update in
-                self?.apply(update, for: id)
-            }
-            self.streams[id] = stream
-            stream.start()
+
+    public func select(serverID: String) {
+        self.selectedID = serverID
+        self.render()
+        if self.visible {
+            self.startStream()
         }
     }
-    
-    private func stopStreams() {
-        self.streams.values.forEach { $0.stop() }
-        self.streams.removeAll()
+
+    public func callback(_ values: [LinuxServerState]) {
+        values.forEach { self.states[$0.config.id] = $0 }
+        if self.selectedID == nil {
+            self.selectedID = values.first?.config.id
+        }
+        self.render()
     }
-    
-    private func apply(_ update: RemoteUpdate, for id: String) {
-        _ = self.groups.arrangedSubviews.compactMap { $0 as? GroupView }.first { $0.apply(update, for: id) }
+
+    private var selectedState: LinuxServerState? {
+        if let selectedID, let state = self.states[selectedID] {
+            return state
+        }
+        return self.states.values.sorted { $0.config.displayName < $1.config.displayName }.first
     }
-    
-    internal func callback(_ snapshot: RemoteSnapshot) {
-        let enabledMachines = snapshot.machines.filter { $0.state }
-        let enabledHosts = snapshot.hosts.filter { $0.state }
-        
-        let mi = Dictionary(snapshot.order.machines.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
-        let hi = Dictionary(snapshot.order.hosts.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
-        let groupById = Dictionary(uniqueKeysWithValues: snapshot.groups.map { ($0.id, $0) })
-        
-        let sortedMachines = enabledMachines.sorted { a, b in
-            let ia = mi[a.id] ?? Int.max
-            let ib = mi[b.id] ?? Int.max
-            if ia != ib { return ia < ib }
-            return a.displayName.localizedCaseInsensitiveCompare(b.displayName) == .orderedAscending
+
+    private func render() {
+        self.arrangedSubviews.forEach {
+            self.removeArrangedSubview($0)
+            $0.removeFromSuperview()
         }
-        let sortedHosts = enabledHosts.sorted { a, b in
-            let ia = hi[a.id] ?? Int.max
-            let ib = hi[b.id] ?? Int.max
-            if ia != ib { return ia < ib }
-            return a.displayName.localizedCaseInsensitiveCompare(b.displayName) == .orderedAscending
+
+        guard let state = self.selectedState else {
+            self.addArrangedSubview(EmptyView(height: 74, msg: localizedString("Add a Linux server in Settings")))
+            self.resize()
+            return
         }
-        
-        var machinesByGroup: [String: [RemoteMachine]] = [:]
-        var ungroupedMachines: [RemoteMachine] = []
-        for m in sortedMachines {
-            if let gid = m.groupID, !gid.isEmpty, groupById[gid] != nil {
-                machinesByGroup[gid, default: []].append(m)
-            } else {
-                ungroupedMachines.append(m)
+
+        self.addArrangedSubview(self.header(state))
+        if let snapshot = state.snapshot {
+            self.addArrangedSubview(self.metricRows(snapshot))
+            self.addArrangedSubview(self.details(snapshot))
+            self.addArrangedSubview(self.processes(snapshot.processes))
+        } else {
+            self.addArrangedSubview(self.offline(state))
+        }
+        self.resize()
+    }
+
+    private func resize() {
+        let height = max(74, self.fittingSize.height)
+        self.setFrameSize(NSSize(width: Constants.Popup.width, height: height))
+        self.sizeCallback?(self.frame.size)
+    }
+
+    private func header(_ state: LinuxServerState) -> NSView {
+        let view = NSStackView()
+        view.orientation = .vertical
+        view.spacing = 2
+        view.edgeInsets = NSEdgeInsets(top: 8, left: 8, bottom: 6, right: 8)
+
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.alignment = .centerY
+
+        let title = NSTextField(labelWithString: state.config.displayName)
+        title.font = NSFont.systemFont(ofSize: 18, weight: .semibold)
+        let dot = DotView(color: state.online ? .systemGreen : .systemRed)
+        row.addArrangedSubview(dot)
+        row.addArrangedSubview(title)
+        row.addArrangedSubview(NSView())
+
+        let subtitle = NSTextField(labelWithString: self.subtitle(state))
+        subtitle.font = NSFont.systemFont(ofSize: 11, weight: .regular)
+        subtitle.textColor = .secondaryLabelColor
+
+        view.addArrangedSubview(row)
+        view.addArrangedSubview(subtitle)
+        return view
+    }
+
+    private func subtitle(_ state: LinuxServerState) -> String {
+        if let snapshot = state.snapshot {
+            return "\(snapshot.host.os) · \(snapshot.cpu.cores) cores · up \(duration(snapshot.uptimeSec))"
+        }
+        if let seen = state.lastSeen {
+            return "\(state.error ?? "Offline") · last seen \(RelativeDateTimeFormatter().localizedString(for: seen, relativeTo: Date()))"
+        }
+        return state.error ?? "Offline"
+    }
+
+    private func metricRows(_ snapshot: LinuxServerSnapshot) -> NSView {
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.spacing = Constants.Popup.spacing * 2
+
+        let row1 = NSStackView(views: [
+            MetricCard(title: "CPU", value: "\(Int(snapshot.cpu.usagePercent.rounded()))%", subtitle: String(format: "Load %.2f / %.2f", snapshot.load.one, snapshot.load.five), percent: snapshot.cpu.usagePercent),
+            MetricCard(title: "Memory", value: "\(Int(snapshot.memory.usagePercent.rounded()))%", subtitle: "\(bytes(snapshot.memory.usedBytes)) / \(bytes(snapshot.memory.totalBytes))", percent: snapshot.memory.usagePercent)
+        ])
+        row1.orientation = .horizontal
+        row1.spacing = Constants.Popup.spacing * 2
+        row1.distribution = .fillEqually
+
+        let row2 = NSStackView(views: [
+            MetricCard(title: "Disk", value: "\(Int(snapshot.diskUsagePercent.rounded()))%", subtitle: snapshot.disks.first?.mountpoint ?? "No disks", percent: snapshot.diskUsagePercent),
+            MetricCard(title: "Network", value: bytesPerSecond(snapshot.networkBytesPerSecond), subtitle: "\(snapshot.network.count) interfaces", percent: min(100, snapshot.networkBytesPerSecond / 1_000_000 * 100), accent: .systemBlue)
+        ])
+        row2.orientation = .horizontal
+        row2.spacing = Constants.Popup.spacing * 2
+        row2.distribution = .fillEqually
+
+        stack.addArrangedSubview(row1)
+        stack.addArrangedSubview(row2)
+
+        if let gpu = snapshot.gpu?.first {
+            stack.addArrangedSubview(MetricCard(
+                title: "GPU",
+                value: "\(Int(gpu.usagePercent.rounded()))%",
+                subtitle: "\(gpu.name) · \(Int(gpu.tempCelsius.rounded()))°C",
+                percent: gpu.usagePercent,
+                accent: .systemOrange
+            ))
+        }
+        return stack
+    }
+
+    private func details(_ snapshot: LinuxServerSnapshot) -> NSView {
+        let section = PreferencesSection(title: "Details", [
+            self.detailRow("Swap", "\(Int(snapshot.swap.usagePercent.rounded()))% · \(bytes(snapshot.swap.usedBytes)) / \(bytes(snapshot.swap.totalBytes))"),
+            self.detailRow("Kernel", snapshot.host.kernel),
+            self.detailRow("Temperature", snapshot.temperature.first.map { "\($0.name) \(Int($0.tempCelsius.rounded()))°C" } ?? "No sensors")
+        ])
+        return section
+    }
+
+    private func processes(_ processes: [LinuxProcessInfo]) -> NSView {
+        let rows = processes.prefix(6).map {
+            self.detailRow($0.name, "\(bytes($0.memoryBytes)) · pid \($0.pid)")
+        }
+        return PreferencesSection(title: "Top Processes", rows)
+    }
+
+    private func offline(_ state: LinuxServerState) -> NSView {
+        PreferencesSection(title: "Connection", [
+            self.detailRow("Status", state.error ?? "Offline"),
+            self.detailRow("URL", state.config.url),
+            self.detailRow("Last seen", state.lastSeen.map { RelativeDateTimeFormatter().localizedString(for: $0, relativeTo: Date()) } ?? "Never")
+        ])
+    }
+
+    private func detailRow(_ key: String, _ value: String) -> NSView {
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 8
+        row.edgeInsets = NSEdgeInsets(top: 2, left: 0, bottom: 2, right: 0)
+
+        let keyField = NSTextField(labelWithString: key)
+        keyField.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        keyField.textColor = .secondaryLabelColor
+        keyField.widthAnchor.constraint(equalToConstant: 78).isActive = true
+
+        let valueField = NSTextField(labelWithString: value)
+        valueField.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        valueField.lineBreakMode = .byTruncatingMiddle
+
+        row.addArrangedSubview(keyField)
+        row.addArrangedSubview(valueField)
+        return row
+    }
+
+    private func startStream() {
+        self.stopStream()
+        guard let state = self.selectedState else { return }
+        let stream = LinuxServerStream(config: state.config) { [weak self] snapshot in
+            guard let self else { return }
+            let state = LinuxServerState(config: state.config, snapshot: snapshot, error: nil, lastSeen: snapshot.timestamp)
+            DispatchQueue.main.async {
+                self.states[state.config.id] = state
+                self.render()
             }
         }
-        var hostsByGroup: [String: [RemoteHost]] = [:]
-        var ungroupedHosts: [RemoteHost] = []
-        for h in sortedHosts {
-            if let gid = h.group, !gid.isEmpty, groupById[gid] != nil {
-                hostsByGroup[gid, default: []].append(h)
-            } else {
-                ungroupedHosts.append(h)
-            }
-        }
-        
-        // Desired groups, in order: ungrouped first, then groups (in snapshot order).
-        // Each group holds its machines first, then its hosts.
-        var groups: [(id: String, title: String?, machines: [RemoteMachine], hosts: [RemoteHost])] = []
-        if !ungroupedMachines.isEmpty || !ungroupedHosts.isEmpty {
-            groups.append((id: "", title: nil, machines: ungroupedMachines, hosts: ungroupedHosts))
-        }
-        for group in snapshot.groups {
-            let machines = machinesByGroup[group.id] ?? []
-            let hosts = hostsByGroup[group.id] ?? []
-            if !machines.isEmpty || !hosts.isEmpty {
-                groups.append((id: group.id, title: group.name, machines: machines, hosts: hosts))
-            }
-        }
-        
-        let sectorIDs = Set(groups.map { $0.id })
-        
-        // 1. Remove groups that no longer exist
-        self.groups.subviews.compactMap { $0 as? GroupView }.filter { !sectorIDs.contains($0.id) }.forEach { $0.removeFromSuperview() }
-        
-        // 2. Add new / update existing
-        groups.forEach { sector in
-            if let view = self.groups.subviews.compactMap({ $0 as? GroupView }).first(where: { $0.id == sector.id }) {
-                view.update(title: sector.title, machines: sector.machines, hosts: sector.hosts)
-            } else {
-                let view = GroupView(id: sector.id, title: sector.title)
-                view.sizeCallback = { [weak self] in self?.recalculateHeight() }
-                view.update(title: sector.title, machines: sector.machines, hosts: sector.hosts)
-                self.groups.addArrangedSubview(view)
-            }
-        }
-        
-        // 3. Reorder to match `groups`
-        groups.enumerated().forEach { (index, sector) in
-            if let view = self.groups.arrangedSubviews.compactMap({ $0 as? GroupView }).first(where: { $0.id == sector.id }) {
-                self.groups.removeArrangedSubview(view)
-                self.groups.insertArrangedSubview(view, at: index)
-            }
-        }
-        
-        self.currentMachineIDs = sortedMachines.map { $0.id }
-        self.syncStreams()
-        
-        self.recalculateHeight()
+        self.stream = stream
+        stream.start()
+    }
+
+    private func stopStream() {
+        self.stream?.stop()
+        self.stream = nil
     }
 }
 
-private class GroupView: NSStackView {
-    public let id: String
-    public var sizeCallback: (() -> Void)?
-    
-    private var titleLabel: LabelField?
-    private var header: NSStackView?
-    private let statusDot = DotView(color: .tertiaryLabelColor)
-    private let chevron = NSImageView()
-    private var collapsed: Bool = true
-    
-    private var currentMachines: [RemoteMachine] = []
-    private var currentHosts: [RemoteHost] = []
-    
-    private let body: NSStackView = {
-        let v = NSStackView()
-        v.orientation = .vertical
-        v.distribution = .fill
-        v.spacing = 0
-        v.translatesAutoresizingMaskIntoConstraints = false
-        return v
-    }()
-    
-    public init(id: String, title: String?) {
-        self.id = id
-        super.init(frame: .zero)
-        
-        self.orientation = .vertical
-        self.distribution = .fill
-        self.spacing = 0
-        self.translatesAutoresizingMaskIntoConstraints = false
-        
+private final class MetricCard: NSView {
+    private let title: String
+    private let value: String
+    private let subtitle: String
+    private let percent: Double
+    private let accent: NSColor
+
+    init(title: String, value: String, subtitle: String, percent: Double, accent: NSColor? = nil) {
+        self.title = title
+        self.value = value
+        self.subtitle = subtitle
+        self.percent = percent
+        self.accent = accent ?? MetricCard.color(percent)
+        super.init(frame: NSRect(x: 0, y: 0, width: 126, height: 74))
         self.wantsLayer = true
         self.layer?.cornerRadius = Constants.Popup.radius
-        
-        if let title, !title.isEmpty {
-            self.body.edgeInsets = NSEdgeInsets(top: 0, left: 2, bottom: 4, right: 2)
-            
-            let header = NSStackView()
-            header.orientation = .horizontal
-            header.alignment = .centerY
-            header.spacing = 4
-            header.edgeInsets = NSEdgeInsets(top: 12, left: Constants.Popup.margins, bottom: 12, right: Constants.Popup.margins)
-            header.translatesAutoresizingMaskIntoConstraints = false
-            header.setHuggingPriority(NSLayoutConstraint.Priority(500), for: .vertical)
-            
-            let label = LabelField(title)
-            label.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
-            label.textColor = .secondaryLabelColor
-            label.alignment = .left
-            self.titleLabel = label
-            
-            self.chevron.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold)
-            self.chevron.contentTintColor = .secondaryLabelColor
-            self.updateChevron()
-            
-            header.addArrangedSubview(self.statusDot)
-            header.addArrangedSubview(label)
-            header.addArrangedSubview(NSView())
-            header.addArrangedSubview(self.chevron)
-            self.addArrangedSubview(header)
-            self.header = header
-            
-            header.widthAnchor.constraint(equalTo: self.widthAnchor).isActive = true
-            
-            let click = NSClickGestureRecognizer(target: self, action: #selector(self.toggleCollapse))
-            header.addGestureRecognizer(click)
-            
-            self.body.isHidden = self.collapsed
-        } else {
-            self.collapsed = false
-        }
-        
-        self.addArrangedSubview(self.body)
+        self.layer?.backgroundColor = NSColor.quaternaryLabelColor.withAlphaComponent(0.08).cgColor
+        self.heightAnchor.constraint(equalToConstant: 74).isActive = true
     }
-    
+
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
-    
-    override func updateLayer() {
-        self.layer?.backgroundColor = (isDarkMode ? NSColor(red: 17/255, green: 17/255, blue: 17/255, alpha: 0.25) : NSColor(red: 245/255, green: 245/255, blue: 245/255, alpha: 1)).cgColor
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        draw(self.title, x: 8, y: 52, size: 10, color: self.accent, weight: .semibold)
+        draw(self.value, x: 8, y: 28, size: 20, color: .labelColor, weight: .bold)
+        draw(self.subtitle, x: 8, y: 9, size: 10, color: .secondaryLabelColor, weight: .regular)
+
+        let bar = NSRect(x: 8, y: 4, width: self.bounds.width - 16, height: 3)
+        NSColor.tertiaryLabelColor.withAlphaComponent(0.25).setFill()
+        NSBezierPath(roundedRect: bar, xRadius: 1.5, yRadius: 1.5).fill()
+        let fill = NSRect(x: bar.minX, y: bar.minY, width: bar.width * min(max(self.percent, 0), 100) / 100, height: bar.height)
+        self.accent.setFill()
+        NSBezierPath(roundedRect: fill, xRadius: 1.5, yRadius: 1.5).fill()
     }
-    
-    @objc private func toggleCollapse() {
-        self.collapsed.toggle()
-        self.body.isHidden = self.collapsed
-        self.updateChevron()
-        self.sizeCallback?()
+
+    private func draw(_ string: String, x: CGFloat, y: CGFloat, size: CGFloat, color: NSColor, weight: NSFont.Weight) {
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: size, weight: weight),
+            .foregroundColor: color
+        ]
+        NSAttributedString(string: string, attributes: attributes).draw(in: NSRect(x: x, y: y, width: self.bounds.width - (x * 2), height: size + 4))
     }
-    
-    private func updateChevron() {
-        let name = self.collapsed ? "chevron.forward" : "chevron.down"
-        self.chevron.image = NSImage(systemSymbolName: name, accessibilityDescription: nil)
-    }
-    
-    public func update(title: String?, machines: [RemoteMachine], hosts: [RemoteHost]) {
-        if let titleLabel, let title { titleLabel.stringValue = title }
-        self.currentMachines = machines
-        self.currentHosts = hosts
-        self.statusDot.setColor(self.aggregateColor(machines: machines, hosts: hosts))
-        
-        let items: [RemoteItem] = machines.map { .machine($0) } + hosts.map { .host($0) }
-        let ids = Set(items.map { $0.id })
-        
-        self.body.subviews.compactMap { $0 as? RemoteItemView }.filter { !ids.contains($0.id) }.forEach { $0.removeFromSuperview() }
-        
-        items.enumerated().forEach { (index, item) in
-            let view: RemoteItemView
-            if let existing = self.body.subviews.compactMap({ $0 as? RemoteItemView }).first(where: { $0.id == item.id }) {
-                existing.update(item)
-                view = existing
-            } else {
-                view = RemoteItemView(item)
-                self.body.addArrangedSubview(view)
-            }
-            self.body.removeArrangedSubview(view)
-            self.body.insertArrangedSubview(view, at: index)
-            view.setLast(index == items.count - 1)
-        }
-    }
-    
-    @discardableResult
-    public func apply(_ update: RemoteUpdate, for id: String) -> Bool {
-        guard let index = self.currentMachines.firstIndex(where: { $0.id == id }) else { return false }
-        let merged = self.currentMachines[index].applying(update)
-        self.currentMachines[index] = merged
-        self.body.arrangedSubviews.compactMap { $0 as? RemoteItemView }.first { $0.id == RemoteItem.machine(merged).id }?.update(.machine(merged))
-        self.statusDot.setColor(self.aggregateColor(machines: self.currentMachines, hosts: self.currentHosts))
-        return true
-    }
-    
-    private func aggregateColor(machines: [RemoteMachine], hosts: [RemoteHost]) -> NSColor {
-        var up = 0, total = 0
-        for m in machines {
-            total += 1
-            if m.online { up += 1 }
-        }
-        for h in hosts {
-            total += 1
-            if h.lastStatus?.lowercased() == "up" { up += 1 }
-        }
-        if total == 0 { return .tertiaryLabelColor }
-        if up == total { return .systemGreen }
-        if up == 0 { return .systemRed }
-        return .systemYellow
+
+    private static func color(_ percent: Double) -> NSColor {
+        if percent >= 90 { return .systemRed }
+        if percent >= 75 { return .systemOrange }
+        return .systemGreen
     }
 }
 
-private class RemoteItemView: NSStackView {
-    public let id: String
-    
-    private let dot = DotView(color: .tertiaryLabelColor)
-    private var labelField: LabelField = LabelField()
-    
-    private let cpuLabel = TextView()
-    private let cpuBar = BarChartView(horizontal: true)
-    private let ramLabel = TextView()
-    private let ramBar = BarChartView(horizontal: true)
-    
-    private let grid = GridChartView(grid: (24, 1))
-    
-    private let separator = RemoteSeparator()
-    private var heightConstraint: NSLayoutConstraint?
-    
-    public init(_ item: RemoteItem) {
-        self.id = item.id
-        
-        super.init(frame: NSRect(x: 0, y: 0, width: Constants.Popup.width, height: 53))
-        let height = self.heightAnchor.constraint(equalToConstant: 53)
-        height.priority = NSLayoutConstraint.Priority(999)
-        height.isActive = true
-        self.heightConstraint = height
-        self.setContentHuggingPriority(.required, for: .vertical)
-        
-        self.orientation = .vertical
-        self.distribution = .fill
-        self.spacing = 0
-        self.edgeInsets = NSEdgeInsets(top: Constants.Popup.margins, left: Constants.Popup.margins, bottom: 0, right: Constants.Popup.margins)
-        
-        let header: NSStackView = {
-            let view: NSStackView = NSStackView()
-            view.orientation = .horizontal
-            view.spacing = 4
-            
-            self.dot.setColor(item.status ? .systemGreen : .systemRed)
-            self.labelField.stringValue = item.name
-            
-            view.addArrangedSubview(self.dot)
-            view.addArrangedSubview(self.labelField)
-            view.addArrangedSubview(NSView())
-            
-            if let url = item.url {
-                view.addArrangedSubview(LinkButton(url, size: 10))
-            }
-            
-            return view
-        }()
-        
-        let stats: NSView
-        switch item {
-        case .machine: stats = self.machineStats()
-        case .host:    stats = self.hostStats()
-        }
-        
-        self.addArrangedSubview(header)
-        self.addArrangedSubview(stats)
-        self.addArrangedSubview(self.separator)
+private final class DotView: NSView {
+    private let color: NSColor
+
+    init(color: NSColor) {
+        self.color = color
+        super.init(frame: NSRect(x: 0, y: 0, width: 10, height: 10))
+        self.widthAnchor.constraint(equalToConstant: 10).isActive = true
+        self.heightAnchor.constraint(equalToConstant: 10).isActive = true
     }
-    
+
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
-    
-    private func machineStats() -> NSView {
-        let view: NSStackView = NSStackView()
-        view.spacing = Constants.Popup.margins
-        view.orientation = .horizontal
-        view.alignment = .centerY
-        view.distribution = .fillEqually
-        view.translatesAutoresizingMaskIntoConstraints = false
-        view.edgeInsets = NSEdgeInsets(top: 2, left: 0, bottom: 2, right: 0)
-        
-        let cpuIcon = NSImageView()
-        cpuIcon.image = NSImage(systemSymbolName: "cpu", accessibilityDescription: localizedString("CPU"))
-        cpuIcon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 10, weight: .regular)
-        cpuIcon.contentTintColor = .secondaryLabelColor
-        cpuIcon.toolTip = localizedString("CPU")
-        
-        self.cpuLabel.font = NSFont.systemFont(ofSize: 10, weight: .regular)
-        self.cpuLabel.textColor = .secondaryLabelColor
-        self.cpuLabel.setContentHuggingPriority(.required, for: .horizontal)
-        
-        let ramIcon = NSImageView()
-        ramIcon.image = NSImage(systemSymbolName: "memorychip", accessibilityDescription: localizedString("RAM"))
-        ramIcon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 10, weight: .regular)
-        ramIcon.contentTintColor = .secondaryLabelColor
-        ramIcon.toolTip = localizedString("RAM")
-        
-        self.ramLabel.font = NSFont.systemFont(ofSize: 10, weight: .regular)
-        self.ramLabel.textColor = .secondaryLabelColor
-        self.ramLabel.setContentHuggingPriority(.required, for: .horizontal)
-        
-        [self.cpuBar, self.ramBar].forEach {
-            let height = $0.heightAnchor.constraint(equalToConstant: 4)
-            height.priority = .defaultHigh
-            height.isActive = true
-            $0.widthAnchor.constraint(greaterThanOrEqualToConstant: 28).isActive = true
-        }
-        
-        let cpuGroup = NSStackView(views: [cpuIcon, self.cpuLabel, self.cpuBar])
-        cpuGroup.orientation = .horizontal
-        cpuGroup.alignment = .centerY
-        cpuGroup.spacing = 0
-        
-        let ramGroup = NSStackView(views: [ramIcon, self.ramLabel, self.ramBar])
-        ramGroup.orientation = .horizontal
-        ramGroup.alignment = .centerY
-        ramGroup.spacing = 0
-        
-        view.addArrangedSubview(cpuGroup)
-        view.addArrangedSubview(ramGroup)
-        
-        return view
-    }
-    
-    private func hostStats() -> NSView {
-        let view: NSStackView = NSStackView()
-        view.spacing = Constants.Popup.margins
-        view.orientation = .horizontal
-        view.alignment = .centerY
-        view.distribution = .fillEqually
-        view.translatesAutoresizingMaskIntoConstraints = false
-        view.edgeInsets = NSEdgeInsets(top: 2, left: 0, bottom: 2, right: 0)
-        
-        self.grid.heightAnchor.constraint(equalToConstant: 9).isActive = true
-        
-        view.addArrangedSubview(self.grid)
-        
-        return view
-    }
-    
-    public func update(_ item: RemoteItem) {
-        self.labelField.stringValue = item.name
-        
-        switch item {
-        case .machine(let machine):
-            self.dot.setColor(machine.online ? .systemGreen : .systemRed)
-            
-            if let cpu = machine.modules?.cpuUsage {
-                self.cpuLabel.stringValue = "\(Int(cpu.rounded(toPlaces: 2) * 100))%"
-                self.cpuBar.setValue(ColorValue(cpu))
-            } else {
-                self.cpuLabel.stringValue = "—"
-                self.cpuBar.setValue(ColorValue(0))
-            }
-            if let ram = machine.modules?.ramUsage {
-                self.ramLabel.stringValue = "\(Int(ram.rounded(toPlaces: 2) * 100))%"
-                self.ramBar.setValue(ColorValue(ram))
-            } else {
-                self.ramLabel.stringValue = "—"
-                self.ramBar.setValue(ColorValue(0))
-            }
-        case .host(let host):
-            self.dot.setColor(host.color)
-            self.grid.addValue(host.lastStatus?.lowercased() == "up")
-        }
-    }
-    
-    public func setLast(_ isLast: Bool) {
-        self.separator.isHidden = isLast
-        self.heightConstraint?.constant = 53 + (isLast ? 0 : 1)
+
+    override func draw(_ dirtyRect: NSRect) {
+        self.color.setFill()
+        NSBezierPath(ovalIn: self.bounds.insetBy(dx: 1, dy: 1)).fill()
     }
 }
 
-private class RemoteSeparator: NSView {
-    public init() {
-        super.init(frame: .zero)
-        
-        self.wantsLayer = true
-        self.layer?.backgroundColor = NSColor.separatorColor.withAlphaComponent(0.05).cgColor
-        
-        let height = self.heightAnchor.constraint(equalToConstant: 1)
-        height.priority = .defaultHigh
-        height.isActive = true
+private final class LinuxServerStream: NSObject, URLSessionDataDelegate {
+    private let config: LinuxServerConfig
+    private let onSnapshot: (LinuxServerSnapshot) -> Void
+    private var session: URLSession?
+    private var task: URLSessionDataTask?
+    private var buffer = Data()
+
+    init(config: LinuxServerConfig, onSnapshot: @escaping (LinuxServerSnapshot) -> Void) {
+        self.config = config
+        self.onSnapshot = onSnapshot
+        super.init()
     }
-    
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
+
+    func start() {
+        do {
+            var request = try LinuxServerClient.request(for: self.config, path: "/v1/stream")
+            request.timeoutInterval = .infinity
+            let configuration = URLSessionConfiguration.default
+            configuration.timeoutIntervalForRequest = .infinity
+            configuration.timeoutIntervalForResource = .infinity
+            let session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+            self.session = session
+            self.task = session.dataTask(with: request)
+            self.task?.resume()
+        } catch {
+            return
+        }
     }
-    
-    public override func updateLayer() {
-        self.layer?.backgroundColor = NSColor.separatorColor.withAlphaComponent(0.05).cgColor
+
+    func stop() {
+        self.task?.cancel()
+        self.task = nil
+        self.session?.invalidateAndCancel()
+        self.session = nil
+        self.buffer.removeAll()
     }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        self.buffer.append(data)
+        let separator = Data("\n\n".utf8)
+        while let range = self.buffer.range(of: separator) {
+            let frame = self.buffer.subdata(in: 0..<range.lowerBound)
+            self.buffer.removeSubrange(0..<range.upperBound)
+            self.handle(frame)
+        }
+    }
+
+    private func handle(_ frame: Data) {
+        guard let raw = String(data: frame, encoding: .utf8) else { return }
+        let dataLines = raw.split(separator: "\n")
+            .filter { $0.hasPrefix("data:") }
+            .map { $0.dropFirst(5).trimmingCharacters(in: .whitespaces) }
+        guard !dataLines.isEmpty else { return }
+        let payload = dataLines.joined(separator: "\n")
+        guard let data = payload.data(using: .utf8),
+              let snapshot = try? LinuxServerClient.decoder.decode(LinuxServerSnapshot.self, from: data) else { return }
+        self.onSnapshot(snapshot)
+    }
+}
+
+private func bytes(_ value: UInt64) -> String {
+    Units(bytes: Int64(value)).getReadableMemory(style: .memory)
+}
+
+private func bytesPerSecond(_ value: Double) -> String {
+    Units(bytes: Int64(value)).getReadableSpeed()
+}
+
+private func duration(_ seconds: Double) -> String {
+    let formatter = DateComponentsFormatter()
+    formatter.allowedUnits = [.day, .hour, .minute]
+    formatter.maximumUnitCount = 2
+    formatter.unitsStyle = .abbreviated
+    return formatter.string(from: seconds) ?? "0m"
 }

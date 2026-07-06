@@ -76,7 +76,7 @@ public enum ModuleType: Int {
         case .battery: return "Battery"
         case .bluetooth: return "Bluetooth"
         case .clock: return "Clock"
-        case .remote: return "Remote"
+        case .remote: return "Linux Servers"
         case .combined: return ""
         }
     }

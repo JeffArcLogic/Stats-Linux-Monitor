@@ -2,512 +2,285 @@
 //  settings.swift
 //  Remote
 //
-//  Created by Serhiy Mytrovtsiy on 20/05/2026.
-//  Using Swift 6.0.
-//  Running on macOS 26.5.
-//
-//  Copyright © 2020 Serhiy Mytrovtsiy. All rights reserved.
-//
 
 import Cocoa
 import Kit
 
-internal class Settings: NSStackView, Settings_v {
-    private let title: String
-    
-    public var toggleCallback: (() -> Void) = {}
-    
-    private let heroView: HeroView = HeroView()
-    private var settingsView: NSStackView? = nil
-    private var tabView: NSTabView?
-    private var segmentedControl: NSSegmentedControl?
-    
-    private let machinesList: RemoteList = RemoteList()
-    private let hostsList: RemoteList = RemoteList()
-    
-    private var machines: [RemoteMachine]?
-    private var hosts: [RemoteHost]?
-    private var groups: [RemoteGroup]?
-    private var order: RemoteAccountOrder?
-    
+private let enabledColumnID = NSUserInterfaceItemIdentifier(rawValue: "enabled")
+private let serverNameColumnID = NSUserInterfaceItemIdentifier(rawValue: "server-name")
+private let serverURLColumnID = NSUserInterfaceItemIdentifier(rawValue: "server-url")
+
+internal class Settings: NSStackView, Settings_v, NSTableViewDelegate, NSTableViewDataSource, NSTextFieldDelegate {
+    public var changeCallback: (() -> Void) = {}
+
+    private var servers: [LinuxServerConfig] = []
+    private var selectedIndex: Int?
+
+    private let tableView = NSTableView()
+    private let scrollView = NSScrollView()
+    private let nameField = NSTextField()
+    private let urlField = NSTextField()
+    private let tokenField = NSSecureTextField()
+    private let enabledField = NSButton(checkboxWithTitle: localizedString("Enabled"), target: nil, action: nil)
+    private let displayMode = NSPopUpButton()
+    private var deleteButton: NSButton?
+    private var upButton: NSButton?
+    private var downButton: NSButton?
+
     public init(_ module: ModuleType) {
-        self.title = module.stringValue
-        
         super.init(frame: .zero)
-        
+
+        self.servers = LinuxServersStore.load()
         self.orientation = .vertical
+        self.distribution = .fill
         self.spacing = Constants.Settings.margin
-        
-        self.machinesList.toggleCallback = { [weak self] in self?.toggleCallback() }
-        self.hostsList.toggleCallback = { [weak self] in self?.toggleCallback() }
-        
-        let settingsView = self.settings()
-        self.settingsView = settingsView
-        
-        self.addArrangedSubview(self.heroView)
-        self.addArrangedSubview(settingsView)
-        
-        self.heroView.widthAnchor.constraint(equalTo: self.widthAnchor).isActive = true
-        self.segmentedControl?.widthAnchor.constraint(equalTo: self.widthAnchor).isActive = true
-        self.tabView?.widthAnchor.constraint(equalTo: self.widthAnchor).isActive = true
-        
-        self.render(authorized: SystemStats.shared.isAuthorized)
-        
-        NotificationCenter.default.addObserver(self, selector: #selector(self.handleRemoteState), name: .remoteState, object: nil)
+
+        self.setupTable()
+        self.setupForm()
+        self.reloadSelection()
     }
-    
+
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
-    
-    deinit {
-        NotificationCenter.default.removeObserver(self, name: .remoteState, object: nil)
-    }
-    
-    @objc private func handleRemoteState(_ notification: Notification) {
-        guard let auth = notification.userInfo?["auth"] as? Bool else { return }
-        DispatchQueue.main.async { [weak self] in
-            self?.render(authorized: auth)
-            if auth { self?.load() }
-        }
-    }
-    
-    private func render(authorized: Bool) {
-        self.heroView.isHidden = authorized
-        self.settingsView?.isHidden = !authorized
-    }
-    
+
     public func load(widgets: [widget_t]) {
-        if SystemStats.shared.isAuthorized {
-            self.load()
-        }
+        self.tableView.reloadData()
     }
-    
-    private func load() {
-        self.machines = nil
-        self.hosts = nil
-        self.groups = nil
-        self.order = nil
-        
-        SystemStats.shared.fetchMachines { [weak self] list in
-            self?.machines = list
-            self?.tryRender()
-        }
-        SystemStats.shared.fetchHosts { [weak self] list in
-            self?.hosts = list
-            self?.tryRender()
-        }
-        SystemStats.shared.fetchGroups { [weak self] list in
-            self?.groups = list
-            self?.tryRender()
-        }
-        SystemStats.shared.fetchAccountOrder { [weak self] order in
-            self?.order = order
-            self?.tryRender()
-        }
+
+    private func setupTable() {
+        self.scrollView.documentView = self.tableView
+        self.scrollView.hasVerticalScroller = true
+        self.scrollView.hasHorizontalScroller = false
+        self.scrollView.autohidesScrollers = true
+        self.scrollView.drawsBackground = true
+        self.scrollView.backgroundColor = .clear
+        self.scrollView.heightAnchor.constraint(equalToConstant: 174).isActive = true
+
+        self.tableView.delegate = self
+        self.tableView.dataSource = self
+        self.tableView.allowsMultipleSelection = false
+        self.tableView.usesAlternatingRowBackgroundColors = true
+        self.tableView.gridStyleMask = [.solidHorizontalGridLineMask]
+        self.tableView.rowHeight = 30
+        self.tableView.style = .plain
+
+        let enabled = NSTableColumn(identifier: enabledColumnID)
+        enabled.title = ""
+        enabled.width = 36
+        let name = NSTableColumn(identifier: serverNameColumnID)
+        name.title = localizedString("Server")
+        name.width = 150
+        let url = NSTableColumn(identifier: serverURLColumnID)
+        url.title = localizedString("URL")
+        url.width = 300
+        self.tableView.addTableColumn(enabled)
+        self.tableView.addTableColumn(name)
+        self.tableView.addTableColumn(url)
+
+        self.addArrangedSubview(self.scrollView)
+        self.addArrangedSubview(self.footer())
     }
-    
-    private func tryRender() {
-        guard let machines = self.machines,
-              let hosts = self.hosts,
-              let groups = self.groups,
-              let order = self.order else { return }
-        
-        let machineIndex = Dictionary(uniqueKeysWithValues: order.machines.enumerated().map { ($1, $0) })
-        let hostIndex = Dictionary(uniqueKeysWithValues: order.hosts.enumerated().map { ($1, $0) })
-        
-        let sortedMachines = machines.sorted { a, b in
-            let ia = machineIndex[a.id] ?? Int.max
-            let ib = machineIndex[b.id] ?? Int.max
-            if ia != ib { return ia < ib }
-            return a.displayName.localizedCaseInsensitiveCompare(b.displayName) == .orderedAscending
-        }
-        let sortedHosts = hosts.sorted { a, b in
-            let ia = hostIndex[a.id] ?? Int.max
-            let ib = hostIndex[b.id] ?? Int.max
-            if ia != ib { return ia < ib }
-            return a.displayName.localizedCaseInsensitiveCompare(b.displayName) == .orderedAscending
-        }
-        
-        let groupById = Dictionary(uniqueKeysWithValues: groups.map { ($0.id, $0) })
-        let orderedGroups = self.depthFirstGroups(groups: groups, groupById: groupById)
-        
-        self.machinesList.update(machines: sortedMachines, orderedGroups: orderedGroups, groupById: groupById)
-        self.hostsList.update(hosts: sortedHosts, orderedGroups: orderedGroups, groupById: groupById)
+
+    private func setupForm() {
+        self.nameField.delegate = self
+        self.urlField.delegate = self
+        self.tokenField.delegate = self
+        self.urlField.placeholderString = "http://server.tailnet-name.ts.net:9783"
+        self.tokenField.placeholderString = localizedString("Bearer token")
+
+        self.enabledField.target = self
+        self.enabledField.action = #selector(self.toggleSelectedEnabled)
+
+        self.displayMode.removeAllItems()
+        LinuxServerDisplayMode.allCases.forEach { self.displayMode.addItem(withTitle: $0.label) }
+        self.displayMode.target = self
+        self.displayMode.action = #selector(self.changeDisplayMode)
+
+        self.addArrangedSubview(PreferencesSection([
+            PreferencesRow(localizedString("Name"), component: self.nameField),
+            PreferencesRow(localizedString("URL"), component: self.urlField),
+            PreferencesRow(localizedString("Token"), component: self.tokenField),
+            PreferencesRow(localizedString("Display"), component: self.displayMode),
+            PreferencesRow("", component: self.enabledField)
+        ]))
     }
-    
-    private func depthFirstGroups(groups: [RemoteGroup], groupById: [String: RemoteGroup]) -> [RemoteGroup] {
-        var childrenByParent: [String: [RemoteGroup]] = [:]
-        var roots: [RemoteGroup] = []
-        for g in groups {
-            if let pid = g.parentID, !pid.isEmpty, groupById[pid] != nil {
-                childrenByParent[pid, default: []].append(g)
-            } else {
-                roots.append(g)
-            }
-        }
-        for k in childrenByParent.keys {
-            childrenByParent[k]?.sort { ($0.order ?? 0) < ($1.order ?? 0) }
-        }
-        roots.sort { ($0.order ?? 0) < ($1.order ?? 0) }
-        
-        var ordered: [RemoteGroup] = []
-        var visited: Set<String> = []
-        func walk(_ g: RemoteGroup) {
-            if visited.contains(g.id) { return }
-            visited.insert(g.id)
-            ordered.append(g)
-            for c in childrenByParent[g.id] ?? [] { walk(c) }
-        }
-        for r in roots { walk(r) }
-        return ordered
-    }
-    
-    private func settings() -> NSStackView {
+
+    private func footer() -> NSView {
         let view = NSStackView()
-        
-        view.orientation = .vertical
-        view.spacing = Constants.Settings.margin
-        view.translatesAutoresizingMaskIntoConstraints = false
-        
-        let segmentedControl = NSSegmentedControl(
-            labels: [localizedString("Machines"), localizedString("Hosts")],
-            trackingMode: .selectOne,
-            target: self,
-            action: #selector(self.switchTabs)
-        )
-        segmentedControl.segmentDistribution = .fillEqually
-        segmentedControl.selectSegment(withTag: 0)
-        self.segmentedControl = segmentedControl
-        
-        let tabView = NSTabView()
-        tabView.translatesAutoresizingMaskIntoConstraints = false
-        tabView.tabViewType = .noTabsNoBorder
-        tabView.tabViewBorderType = .none
-        tabView.drawsBackground = false
-        self.tabView = tabView
-        
-        let machinesTab: NSTabViewItem = NSTabViewItem()
-        machinesTab.label = localizedString("Machines")
-        machinesTab.view = self.machinesList
-        tabView.addTabViewItem(machinesTab)
-        
-        let hostsTab: NSTabViewItem = NSTabViewItem()
-        hostsTab.label = localizedString("Hosts")
-        hostsTab.view = self.hostsList
-        tabView.addTabViewItem(hostsTab)
-        
-        view.addArrangedSubview(segmentedControl)
-        view.addArrangedSubview(tabView)
-        
+        view.heightAnchor.constraint(equalToConstant: 27).isActive = true
+        view.orientation = .horizontal
+        view.spacing = 4
+
+        let add = self.iconButton("plus", action: #selector(self.addServer), tooltip: localizedString("Add server"))
+        let remove = self.iconButton("minus", action: #selector(self.deleteServer), tooltip: localizedString("Delete server"))
+        let up = self.iconButton("chevron.up", action: #selector(self.moveServerUp), tooltip: localizedString("Move up"))
+        let down = self.iconButton("chevron.down", action: #selector(self.moveServerDown), tooltip: localizedString("Move down"))
+        self.deleteButton = remove
+        self.upButton = up
+        self.downButton = down
+
+        view.addArrangedSubview(add)
+        view.addArrangedSubview(remove)
+        view.addArrangedSubview(NSView())
+        view.addArrangedSubview(up)
+        view.addArrangedSubview(down)
         return view
     }
-    
-    @objc func switchTabs(sender: NSSegmentedControl) {
-        self.tabView?.selectTabViewItem(at: sender.selectedSegment)
-    }
-}
 
-private class HeroView: NSView {
-    private let view: NSStackView = NSStackView()
-    
-    public init() {
-        super.init(frame: .zero)
-        
-        self.translatesAutoresizingMaskIntoConstraints = false
-        
-        self.view.orientation = .vertical
-        self.view.alignment = .centerX
-        self.view.spacing = 14
-        self.view.edgeInsets = NSEdgeInsets(top: 32, left: 32, bottom: 32, right: 32)
-        self.view.translatesAutoresizingMaskIntoConstraints = false
-        
-        let title = NSTextField(labelWithString: "System Stats")
-        title.font = NSFont.systemFont(ofSize: 22, weight: .semibold)
-        title.alignment = .center
-        
-        let subtitleText = localizedString("Monitor and control your Macs from anywhere. Sign in to your System Stats account to see all your devices and hosts in one place.")
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.alignment = .center
-        let subtitle = NSTextField(wrappingLabelWithString: subtitleText)
-        subtitle.attributedStringValue = NSAttributedString(string: subtitleText, attributes: [
-            .font: NSFont.systemFont(ofSize: 13),
-            .foregroundColor: NSColor.secondaryLabelColor,
-            .paragraphStyle: paragraph
-        ])
-        subtitle.alignment = .center
-        subtitle.maximumNumberOfLines = 0
-        subtitle.preferredMaxLayoutWidth = 420
-        subtitle.widthAnchor.constraint(lessThanOrEqualToConstant: 460).isActive = true
-        
-        let bullets = NSStackView()
-        bullets.orientation = .vertical
-        bullets.alignment = .leading
-        bullets.spacing = 8
-        let bulletItems: [String] = [
-            localizedString("Live CPU, RAM, disk and network metrics"),
-            localizedString("Get notified when a device goes offline or hits a threshold"),
-            localizedString("Monitor HTTP, ICMP and custom endpoints")
-        ]
-        for line in bulletItems {
-            bullets.addArrangedSubview(self.bulletRow(line))
-        }
-        
-        let loginButton = NSButton(title: localizedString("Login"), target: self, action: #selector(self.loginAction))
-        loginButton.bezelStyle = .rounded
-        loginButton.keyEquivalent = "\r"
-        loginButton.controlSize = .large
-        
-        self.view.addArrangedSubview(title)
-        self.view.addArrangedSubview(subtitle)
-        self.view.addArrangedSubview(bullets)
-        self.view.addArrangedSubview(loginButton)
-        
-        self.addSubview(self.view)
-        
-        NSLayoutConstraint.activate([
-            self.view.centerXAnchor.constraint(equalTo: self.centerXAnchor),
-            self.view.centerYAnchor.constraint(equalTo: self.centerYAnchor),
-            self.view.topAnchor.constraint(greaterThanOrEqualTo: self.topAnchor),
-            self.view.bottomAnchor.constraint(lessThanOrEqualTo: self.bottomAnchor),
-            self.view.leadingAnchor.constraint(greaterThanOrEqualTo: self.leadingAnchor),
-            self.view.trailingAnchor.constraint(lessThanOrEqualTo: self.trailingAnchor)
-        ])
+    private func iconButton(_ symbol: String, action: Selector, tooltip: String) -> NSButton {
+        let button = NSButton()
+        button.widthAnchor.constraint(equalToConstant: 27).isActive = true
+        button.heightAnchor.constraint(equalToConstant: 27).isActive = true
+        button.bezelStyle = .rounded
+        button.image = iconFromSymbol(name: symbol, scale: .medium)
+        button.target = self
+        button.action = action
+        button.toolTip = tooltip
+        button.focusRingType = .none
+        return button
     }
-    
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-    
-    private func bulletRow(_ text: String) -> NSView {
-        let row = NSStackView()
-        row.orientation = .horizontal
-        row.alignment = .firstBaseline
-        row.spacing = 8
 
-        let check = NSImageView()
-        check.image = NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: nil)
-        check.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
-        check.contentTintColor = .systemGreen
+    private func persist() {
+        LinuxServersStore.save(self.servers)
+        self.changeCallback()
+    }
 
-        let label = NSTextField(labelWithString: text)
-        label.font = NSFont.systemFont(ofSize: 12)
-        label.textColor = .labelColor
+    private func reloadSelection() {
+        let hasSelection = self.selectedIndex != nil && self.selectedIndex! < self.servers.count
+        self.nameField.isEnabled = hasSelection
+        self.urlField.isEnabled = hasSelection
+        self.tokenField.isEnabled = hasSelection
+        self.enabledField.isEnabled = hasSelection
+        self.displayMode.isEnabled = hasSelection
+        self.deleteButton?.isEnabled = hasSelection
+        self.upButton?.isEnabled = hasSelection && self.selectedIndex != 0
+        self.downButton?.isEnabled = hasSelection && self.selectedIndex != self.servers.count - 1
 
-        row.addArrangedSubview(check)
-        row.addArrangedSubview(label)
-
-        return row
-    }
-    
-    @objc private func loginAction() {
-        SystemStats.shared.login()
-    }
-}
-
-internal class RemoteList: ScrollableStackView {
-    public var toggleCallback: (() -> Void) = {}
-    
-    private var sections: [PreferencesSection] = []
-    
-    public init() {
-        super.init(frame: .zero)
-        
-        self.autoresizingMask = [.width, .height]
-        
-        self.stackView.orientation = .vertical
-        self.stackView.alignment = .width
-        self.stackView.spacing = Constants.Settings.margin
-    }
-    
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-    
-    fileprivate func reset() {
-        for s in self.sections {
-            self.stackView.removeArrangedSubview(s)
-            s.removeFromSuperview()
-        }
-        self.sections.removeAll()
-    }
-    
-    fileprivate func append(_ section: PreferencesSection) {
-        self.stackView.addArrangedSubview(section)
-        self.sections.append(section)
-    }
-    
-    fileprivate func groupPath(for group: RemoteGroup, in groupById: [String: RemoteGroup]) -> String {
-        var parts: [String] = [group.name]
-        var current = group
-        var seen: Set<String> = [group.id]
-        while let pid = current.parentID, !pid.isEmpty, let parent = groupById[pid], !seen.contains(parent.id) {
-            parts.insert(parent.name, at: 0)
-            seen.insert(parent.id)
-            current = parent
-        }
-        return parts.joined(separator: " › ")
-    }
-    
-    // swiftlint:disable:next function_parameter_count
-    fileprivate func row(id: String, storeKey: String, status: Bool?, name: String, url: URL?, subtitle: String) -> NSView {
-        let toggle = switchView(action: #selector(self.toggle), state: Store.shared.bool(key: storeKey, defaultValue: true))
-        toggle.identifier = NSUserInterfaceItemIdentifier(storeKey)
-        
-        let dot = DotView(color: self.dotColor(status))
-        
-        let titleField = TextView()
-        titleField.stringValue = name
-        titleField.font = NSFont.systemFont(ofSize: 12, weight: .regular)
-        
-        let titleRow = NSStackView()
-        titleRow.orientation = .horizontal
-        titleRow.alignment = .centerY
-        titleRow.spacing = 4
-        titleRow.addArrangedSubview(titleField)
-        
-        if let url {
-            titleRow.addArrangedSubview(LinkButton(url))
-        }
-        
-        let textStack = NSStackView()
-        textStack.orientation = .vertical
-        textStack.spacing = 0
-        textStack.alignment = .leading
-        textStack.addArrangedSubview(titleRow)
-        
-        if !subtitle.isEmpty {
-            let subtitleField = TextView()
-            subtitleField.font = NSFont.systemFont(ofSize: 12, weight: .regular)
-            subtitleField.textColor = .secondaryLabelColor
-            subtitleField.stringValue = subtitle
-            textStack.addArrangedSubview(subtitleField)
-            textStack.addArrangedSubview(NSView())
-        }
-        
-        let row = NSStackView(views: [dot, textStack, NSView(), toggle])
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.distribution = .fill
-        row.spacing = 8
-        row.edgeInsets = NSEdgeInsets(top: Constants.Settings.margin / 2, left: 0, bottom: (Constants.Settings.margin / 2) - 1, right: 0)
-        row.identifier = NSUserInterfaceItemIdentifier(id)
-        
-        return row
-    }
-    
-    private func dotColor(_ status: Bool?) -> NSColor {
-        switch status {
-        case .some(true): return .systemGreen
-        case .some(false): return .systemRed
-        case .none: return .clear
-        }
-    }
-    
-    @objc private func toggle(_ sender: NSControl) {
-        guard let key = sender.identifier?.rawValue else { return }
-        Store.shared.set(key: key, value: controlState(sender))
-        self.toggleCallback()
-    }
-    
-    public func update(machines: [RemoteMachine], orderedGroups: [RemoteGroup], groupById: [String: RemoteGroup]) {
-        self.reset()
-        
-        guard !machines.isEmpty else {
-            self.append(PreferencesSection(title: localizedString("Machines"), subtitle: localizedString("No machines yet")))
+        guard hasSelection, let index = self.selectedIndex else {
+            self.nameField.stringValue = ""
+            self.urlField.stringValue = ""
+            self.tokenField.stringValue = ""
+            self.enabledField.state = .off
+            self.displayMode.selectItem(at: 0)
             return
         }
-        
-        var byGroup: [String: [RemoteMachine]] = [:]
-        var ungrouped: [RemoteMachine] = []
-        for m in machines {
-            if let gid = m.groupID, !gid.isEmpty, groupById[gid] != nil {
-                byGroup[gid, default: []].append(m)
-            } else {
-                ungrouped.append(m)
-            }
-        }
-        
-        if !ungrouped.isEmpty {
-            let section = PreferencesSection()
-            for m in ungrouped {
-                section.add(self.row(
-                    id: "machine_\(m.id)",
-                    storeKey: "\(ModuleType.remote.stringValue)_machine_\(m.id)",
-                    status: m.online,
-                    name: m.displayName,
-                    url: m.uri,
-                    subtitle: m.subtitle
-                ))
-            }
-            self.append(section)
-        }
-        
-        for group in orderedGroups {
-            let inGroup = byGroup[group.id] ?? []
-            if inGroup.isEmpty { continue }
-            let section = PreferencesSection(title: self.groupPath(for: group, in: groupById))
-            for m in inGroup {
-                section.add(self.row(
-                    id: "machine_\(m.id)",
-                    storeKey: "\(ModuleType.remote.stringValue)_machine_\(m.id)",
-                    status: m.online,
-                    name: m.displayName,
-                    url: m.uri,
-                    subtitle: m.subtitle
-                ))
-            }
-            self.append(section)
+
+        let server = self.servers[index]
+        self.nameField.stringValue = server.name
+        self.urlField.stringValue = server.url
+        self.tokenField.stringValue = LinuxServerKeychain.read(serverID: server.id)
+        self.enabledField.state = server.enabled ? .on : .off
+        let mode = LinuxServerDisplayMode(rawValue: server.displayMode) ?? .compact
+        self.displayMode.selectItem(withTitle: mode.label)
+    }
+
+    public func numberOfRows(in tableView: NSTableView) -> Int {
+        self.servers.count
+    }
+
+    public func tableViewSelectionDidChange(_ notification: Notification) {
+        let row = self.tableView.selectedRow
+        self.selectedIndex = row >= 0 ? row : nil
+        self.reloadSelection()
+    }
+
+    public func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        guard row < self.servers.count, let id = tableColumn?.identifier else { return nil }
+        let server = self.servers[row]
+
+        switch id {
+        case enabledColumnID:
+            let checkbox = NSButton(checkboxWithTitle: "", target: self, action: #selector(self.toggleRowEnabled))
+            checkbox.state = server.enabled ? .on : .off
+            checkbox.tag = row
+            return checkbox
+        case serverNameColumnID:
+            return self.label(server.displayName)
+        case serverURLColumnID:
+            return self.label(server.url)
+        default:
+            return nil
         }
     }
-    
-    public func update(hosts: [RemoteHost], orderedGroups: [RemoteGroup], groupById: [String: RemoteGroup]) {
-        self.reset()
-        
-        guard !hosts.isEmpty else {
-            self.append(PreferencesSection(title: localizedString("Hosts"), subtitle: localizedString("No hosts yet")))
-            return
+
+    private func label(_ value: String) -> NSTextField {
+        let label = NSTextField(labelWithString: value)
+        label.lineBreakMode = .byTruncatingMiddle
+        return label
+    }
+
+    public func controlTextDidChange(_ obj: Notification) {
+        guard let index = self.selectedIndex, index < self.servers.count else { return }
+        if obj.object as? NSTextField === self.nameField {
+            self.servers[index].name = self.nameField.stringValue
+        } else if obj.object as? NSTextField === self.urlField {
+            self.servers[index].url = self.urlField.stringValue
+        } else if obj.object as? NSTextField === self.tokenField {
+            LinuxServerKeychain.write(self.tokenField.stringValue, serverID: self.servers[index].id)
         }
-        
-        var byGroup: [String: [RemoteHost]] = [:]
-        var ungrouped: [RemoteHost] = []
-        for host in hosts {
-            if let gid = host.group, !gid.isEmpty, groupById[gid] != nil {
-                byGroup[gid, default: []].append(host)
-            } else {
-                ungrouped.append(host)
-            }
+        self.tableView.reloadData()
+        self.persist()
+    }
+
+    @objc private func addServer() {
+        let server = LinuxServerConfig(name: "New server", url: "http://server.tailnet-name.ts.net:9783")
+        self.servers.append(server)
+        self.persist()
+        self.tableView.reloadData()
+        self.tableView.selectRowIndexes(IndexSet(integer: self.servers.count - 1), byExtendingSelection: false)
+    }
+
+    @objc private func deleteServer() {
+        guard let index = self.selectedIndex, index < self.servers.count else { return }
+        LinuxServerKeychain.delete(serverID: self.servers[index].id)
+        self.servers.remove(at: index)
+        self.selectedIndex = self.servers.indices.contains(index) ? index : self.servers.indices.last
+        self.persist()
+        self.tableView.reloadData()
+        if let selectedIndex {
+            self.tableView.selectRowIndexes(IndexSet(integer: selectedIndex), byExtendingSelection: false)
         }
-        
-        if !ungrouped.isEmpty {
-            let section = PreferencesSection()
-            for host in ungrouped {
-                section.add(self.row(
-                    id: "host_\(host.id)",
-                    storeKey: "\(ModuleType.remote.stringValue)_host_\(host.id)",
-                    status: host.status,
-                    name: host.displayName,
-                    url: host.uri,
-                    subtitle: host.subtitle
-                ))
-            }
-            self.append(section)
-        }
-        
-        for group in orderedGroups {
-            guard let inGroup = byGroup[group.id], !inGroup.isEmpty else { continue }
-            let section = PreferencesSection(title: self.groupPath(for: group, in: groupById))
-            for host in inGroup {
-                section.add(self.row(
-                    id: "host_\(host.id)",
-                    storeKey: "\(ModuleType.remote.stringValue)_host_\(host.id)",
-                    status: host.status,
-                    name: host.displayName,
-                    url: host.uri,
-                    subtitle: host.subtitle
-                ))
-            }
-            self.append(section)
-        }
+        self.reloadSelection()
+    }
+
+    @objc private func moveServerUp() {
+        guard let index = self.selectedIndex, index > 0 else { return }
+        self.servers.swapAt(index, index - 1)
+        self.selectedIndex = index - 1
+        self.persist()
+        self.tableView.reloadData()
+        self.tableView.selectRowIndexes(IndexSet(integer: index - 1), byExtendingSelection: false)
+    }
+
+    @objc private func moveServerDown() {
+        guard let index = self.selectedIndex, index < self.servers.count - 1 else { return }
+        self.servers.swapAt(index, index + 1)
+        self.selectedIndex = index + 1
+        self.persist()
+        self.tableView.reloadData()
+        self.tableView.selectRowIndexes(IndexSet(integer: index + 1), byExtendingSelection: false)
+    }
+
+    @objc private func toggleSelectedEnabled() {
+        guard let index = self.selectedIndex, index < self.servers.count else { return }
+        self.servers[index].enabled = self.enabledField.state == .on
+        self.tableView.reloadData()
+        self.persist()
+    }
+
+    @objc private func toggleRowEnabled(_ sender: NSButton) {
+        guard sender.tag < self.servers.count else { return }
+        self.servers[sender.tag].enabled = sender.state == .on
+        self.persist()
+        self.reloadSelection()
+    }
+
+    @objc private func changeDisplayMode() {
+        guard let index = self.selectedIndex, index < self.servers.count else { return }
+        let title = self.displayMode.titleOfSelectedItem ?? LinuxServerDisplayMode.compact.label
+        let mode = LinuxServerDisplayMode.allCases.first(where: { $0.label == title }) ?? .compact
+        self.servers[index].displayMode = mode.rawValue
+        self.persist()
     }
 }

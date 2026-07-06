@@ -1,0 +1,19 @@
+[Unit]
+Description=Stats Linux server metrics agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/server-stats-agent.env
+ExecStart=/usr/local/bin/server-stats-agent
+Restart=on-failure
+RestartSec=5s
+User=root
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

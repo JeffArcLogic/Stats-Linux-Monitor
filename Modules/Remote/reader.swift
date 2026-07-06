@@ -2,42 +2,78 @@
 //  reader.swift
 //  Remote
 //
-//  Created by Serhiy Mytrovtsiy on 20/05/2026.
-//  Using Swift 6.0.
-//  Running on macOS 26.5.
-//
-//  Copyright © 2020 Serhiy Mytrovtsiy. All rights reserved.
-//
 
 import Kit
 
-public final class DataReader: Reader<RemoteSnapshot> {
+public final class DataReader: Reader<[LinuxServerState]> {
     private var task: Task<Void, Never>?
     private let taskLock = NSLock()
-    
+    private var lastSeen: [String: Date] = [:]
+
     public override func setup() {
-        self.interval = 60
+        self.defaultInterval = 2
     }
-    
+
     public override func read() {
-        guard SystemStats.shared.isAuthorized else {
-            self.callback(nil)
+        let servers = LinuxServersStore.load().filter(\.enabled)
+        guard !servers.isEmpty else {
+            self.callback([])
             return
         }
-        
+
         self.taskLock.lock()
         self.task?.cancel()
         self.task = Task { [weak self] in
-            async let machines = SystemStats.shared.fetchMachines()
-            async let hosts = SystemStats.shared.fetchHosts()
-            async let groups = SystemStats.shared.fetchGroups()
-            async let order = SystemStats.shared.fetchAccountOrder()
-            
-            let (m, h, g, o) = await (machines, hosts, groups, order)
+            let states = await withTaskGroup(of: LinuxServerState.self) { group -> [LinuxServerState] in
+                for server in servers {
+                    group.addTask {
+                        switch await LinuxServerClient.fetchSnapshot(server) {
+                        case .success(let snapshot):
+                            return LinuxServerState(config: server, snapshot: snapshot, error: nil, lastSeen: snapshot.timestamp)
+                        case .failure(let error):
+                            return LinuxServerState(
+                                config: server,
+                                snapshot: nil,
+                                error: error.localizedDescription,
+                                lastSeen: nil
+                            )
+                        }
+                    }
+                }
+
+                var values: [LinuxServerState] = []
+                for await state in group {
+                    values.append(state)
+                }
+                return values.sorted { $0.config.displayName.localizedCaseInsensitiveCompare($1.config.displayName) == .orderedAscending }
+            }
+
             guard !Task.isCancelled else { return }
-            
-            self?.callback(RemoteSnapshot(machines: m, hosts: h, groups: g, order: o))
+            let merged = self?.mergeLastSeen(states) ?? states
+            self?.callback(merged)
         }
         self.taskLock.unlock()
+    }
+
+    public override func terminate() {
+        self.taskLock.lock()
+        self.task?.cancel()
+        self.task = nil
+        self.taskLock.unlock()
+    }
+
+    private func mergeLastSeen(_ states: [LinuxServerState]) -> [LinuxServerState] {
+        states.map { state in
+            if let seen = state.lastSeen {
+                self.lastSeen[state.config.id] = seen
+                return state
+            }
+            return LinuxServerState(
+                config: state.config,
+                snapshot: nil,
+                error: state.error,
+                lastSeen: self.lastSeen[state.config.id]
+            )
+        }
     }
 }

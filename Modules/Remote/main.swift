@@ -2,458 +2,494 @@
 //  main.swift
 //  Remote
 //
-//  Created by Serhiy Mytrovtsiy on 20/05/2026.
-//  Using Swift 6.0.
-//  Running on macOS 26.5.
-//
-//  Copyright © 2020 Serhiy Mytrovtsiy. All rights reserved.
+//  Self-hosted Linux server monitoring for Stats.
 //
 
 import Cocoa
 import Kit
+import Security
 
-public struct RemoteMachine: Codable {
-    public let id: String
-    public let name: String?
-    public let online: Bool
-    public let groupID: String?
-    public let lastSeenTS: String?
-    public let details: RemoteMachineDetails?
-    public let modules: RemoteModules?
-    
+public struct LinuxServerConfig: Codable, Equatable, Identifiable {
+    public var id: String
+    public var name: String
+    public var url: String
+    public var enabled: Bool
+    public var displayMode: String
+
+    public init(
+        id: String = UUID().uuidString,
+        name: String,
+        url: String,
+        enabled: Bool = true,
+        displayMode: String = LinuxServerDisplayMode.compact.rawValue
+    ) {
+        self.id = id
+        self.name = name
+        self.url = url
+        self.enabled = enabled
+        self.displayMode = displayMode
+    }
+
+    public var endpoint: URL? {
+        var raw = self.url.trimmingCharacters(in: .whitespacesAndNewlines)
+        if raw.isEmpty { return nil }
+        if !raw.contains("://") {
+            raw = "http://\(raw)"
+        }
+        return URL(string: raw)
+    }
+
     public var displayName: String {
-        if let n = self.name, !n.isEmpty { return n }
-        if let model = self.details?.system?.model, !model.isEmpty { return model }
-        return self.id
-    }
-    
-    public var state: Bool {
-        Store.shared.bool(key: "Remote_machine_\(self.id)", defaultValue: true)
-    }
-    
-    public var uri: URL? {
-        URL(string: "\(SystemStats.appHost)/machine/\(self.id)")
-    }
-    
-    public var subtitle: String {
-        guard let os = self.details?.system?.os else { return "" }
-        if let name = os.name, let version = os.version { return "\(name) \(version)" }
-        return os.name ?? ""
+        let trimmed = self.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { return trimmed }
+        return self.endpoint?.host ?? self.url
     }
 }
 
-public struct RemoteModules: Codable {
-    public let cpu: [String: RemoteCPUModule]?
-    public let ram: RemoteRAMModule?
-    
-    public var cpuUsage: Double? {
-        guard let cpu = self.cpu else { return nil }
-        let values = cpu.values.compactMap { $0.usage }
-        guard !values.isEmpty else { return nil }
-        return values.reduce(0, +) / Double(values.count)
-    }
-    
-    public var ramUsage: Double? {
-        guard let ram = self.ram, ram.total > 0 else { return nil }
-        return ram.used / ram.total
+public enum LinuxServerDisplayMode: String, Codable, CaseIterable {
+    case compact
+    case bars
+
+    public var label: String {
+        switch self {
+        case .compact: return "Compact"
+        case .bars: return "Bars"
+        }
     }
 }
 
-public struct RemoteCPUModule: Codable {
-    public let usage: Double?
+public struct LinuxServerState: Codable {
+    public let config: LinuxServerConfig
+    public let snapshot: LinuxServerSnapshot?
+    public let error: String?
+    public let lastSeen: Date?
+
+    public var online: Bool { self.snapshot != nil && self.error == nil }
+
+    public init(config: LinuxServerConfig, snapshot: LinuxServerSnapshot?, error: String?, lastSeen: Date?) {
+        self.config = config
+        self.snapshot = snapshot
+        self.error = error
+        self.lastSeen = lastSeen
+    }
 }
 
-public struct RemoteRAMModule: Codable {
-    public let total: Double
-    public let used: Double
+public struct LinuxServerSnapshot: Codable {
+    public let schema: String
+    public let host: LinuxHostInfo
+    public let timestamp: Date
+    public let uptimeSec: Double
+    public let cpu: LinuxCPUStats
+    public let load: LinuxLoadStats
+    public let memory: LinuxMemoryStats
+    public let swap: LinuxSwapStats
+    public let disks: [LinuxDiskStats]
+    public let network: [LinuxNetStats]
+    public let temperature: [LinuxSensorStats]
+    public let gpu: [LinuxGPUStats]?
+    public let processes: [LinuxProcessInfo]
+
+    public var diskUsagePercent: Double {
+        self.disks.map(\.usagePercent).max() ?? 0
+    }
+
+    public var networkBytesPerSecond: Double {
+        self.network.map { $0.rxBytesPerSec + $0.txBytesPerSec }.reduce(0, +)
+    }
 }
 
-public struct RemoteUpdate: Codable {
-    public let online: Bool?
-    public let modules: RemoteModules?
-    public let lastSeenTS: String?
-}
-
-public struct RemoteGroup: Codable {
-    public let id: String
+public struct LinuxHostInfo: Codable {
     public let name: String
-    public let parentID: String?
-    public let order: Int?
+    public let os: String
+    public let kernel: String
+    public let platform: String
 }
 
-public struct RemoteMachineDetails: Codable {
-    public let system: RemoteMachineSystem?
+public struct LinuxCPUStats: Codable {
+    public let usagePercent: Double
+    public let cores: Int
+    public let perCore: [Double]
 }
 
-public struct RemoteMachineSystem: Codable {
-    public let platform: String?
-    public let model: String?
-    public let os: RemoteMachineOS?
+public struct LinuxLoadStats: Codable {
+    public let one: Double
+    public let five: Double
+    public let fifteen: Double
 }
 
-public struct RemoteMachineOS: Codable {
-    public let name: String?
-    public let version: String?
+public struct LinuxMemoryStats: Codable {
+    public let totalBytes: UInt64
+    public let usedBytes: UInt64
+    public let availableBytes: UInt64
+    public let usagePercent: Double
 }
 
-public struct RemoteAccountOrder: Codable {
-    public let machines: [String]
-    public let hosts: [String]
+public struct LinuxSwapStats: Codable {
+    public let totalBytes: UInt64
+    public let usedBytes: UInt64
+    public let usagePercent: Double
 }
 
-public struct RemoteSnapshot: Codable {
-    public let machines: [RemoteMachine]
-    public let hosts: [RemoteHost]
-    public let groups: [RemoteGroup]
-    public let order: RemoteAccountOrder
+public struct LinuxDiskStats: Codable {
+    public let mountpoint: String
+    public let device: String
+    public let fsType: String
+    public let totalBytes: UInt64
+    public let usedBytes: UInt64
+    public let freeBytes: UInt64
+    public let usagePercent: Double
 }
 
-private struct RemoteAccountResponse: Decodable {
-    let settings: Settings?
-    struct Settings: Decodable {
-        let order: [String]?
-        let hostsOrder: [String]?
+public struct LinuxNetStats: Codable {
+    public let interface: String
+    public let rxBytes: UInt64
+    public let txBytes: UInt64
+    public let rxBytesPerSec: Double
+    public let txBytesPerSec: Double
+}
+
+public struct LinuxSensorStats: Codable {
+    public let name: String
+    public let tempCelsius: Double
+}
+
+public struct LinuxGPUStats: Codable {
+    public let name: String
+    public let usagePercent: Double
+    public let memoryUsedMB: UInt64
+    public let memoryTotalMB: UInt64
+    public let tempCelsius: Double
+}
+
+public struct LinuxProcessInfo: Codable {
+    public let pid: Int
+    public let name: String
+    public let cpuPercent: Double
+    public let memoryBytes: UInt64
+}
+
+public enum LinuxServersStore {
+    private static let key = "LinuxServers_list"
+
+    public static func load() -> [LinuxServerConfig] {
+        guard let data = Store.shared.data(key: key) else { return [] }
+        return (try? JSONDecoder().decode([LinuxServerConfig].self, from: data)) ?? []
     }
-}
 
-public struct RemoteHost: Codable {
-    public let id: String
-    public let type: String
-    public let name: String?
-    public let url: String
-    public let group: String?
-    public let lastStatus: String?
-    public let lastLatencyMs: Int64?
-    public let history: [RemoteHostBucket]?
-    
-    public var displayName: String {
-        if let n = self.name, !n.isEmpty { return n }
-        return self.url
-    }
-    
-    public var state: Bool {
-        Store.shared.bool(key: "Remote_host_\(self.id)", defaultValue: true)
-    }
-    
-    public var color: NSColor {
-        switch self.lastStatus?.lowercased() {
-        case "up": return .systemGreen
-        case "down": return .systemRed
-        case "degraded": return .systemYellow
-        default: return NSColor.tertiaryLabelColor.withAlphaComponent(0.3)
+    public static func save(_ servers: [LinuxServerConfig]) {
+        if servers.isEmpty {
+            Store.shared.remove(key)
+            return
+        }
+        if let data = try? JSONEncoder().encode(servers) {
+            Store.shared.set(key: key, value: data)
         }
     }
-    
-    public var uri: URL? {
-        URL(string: "\(SystemStats.appHost)/host/\(self.id)")
+}
+
+public enum LinuxServerKeychain {
+    private static let service: String = (Bundle.main.bundleIdentifier ?? "eu.exelban.Stats") + ".linux-servers"
+
+    public static func read(serverID: String) -> String {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: serverID,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        guard status == errSecSuccess, let data = item as? Data else { return "" }
+        return String(data: data, encoding: .utf8) ?? ""
     }
-    
-    public var subtitle: String {
-        var parts = [self.type.uppercased()]
-        if let latency = self.lastLatencyMs, latency > 0 {
-            parts.append("\(latency) ms")
+
+    public static func write(_ value: String, serverID: String) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: serverID
+        ]
+
+        if value.isEmpty {
+            SecItemDelete(query as CFDictionary)
+            return
         }
-        return parts.joined(separator: " · ")
+
+        let attributes: [String: Any] = [
+            kSecValueData as String: Data(value.utf8),
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        ]
+        let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if status == errSecItemNotFound {
+            var addQuery = query
+            attributes.forEach { addQuery[$0.key] = $0.value }
+            SecItemAdd(addQuery as CFDictionary, nil)
+        }
     }
-    
-    public var status: Bool {
-        switch self.lastStatus?.lowercased() {
-        case "up": return true
-        case "down", "degraded": return false
-        default: return false
+
+    public static func delete(serverID: String) {
+        self.write("", serverID: serverID)
+    }
+}
+
+public enum LinuxServerClient {
+    public static let decoder: JSONDecoder = {
+        let decoder = JSONDecoder()
+        let plain = ISO8601DateFormatter()
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let value = try container.decode(String.self)
+            if let date = fractional.date(from: value) ?? plain.date(from: value) {
+                return date
+            }
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid RFC3339 date: \(value)")
+        }
+        return decoder
+    }()
+
+    public static func request(for config: LinuxServerConfig, path: String) throws -> URLRequest {
+        guard let endpoint = config.endpoint else {
+            throw LinuxServerClientError.invalidURL
+        }
+        let token = LinuxServerKeychain.read(serverID: config.id)
+        guard !token.isEmpty else {
+            throw LinuxServerClientError.missingToken
+        }
+        let cleanPath = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)
+        let basePath = components?.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? ""
+        components?.path = "/" + [basePath, cleanPath].filter { !$0.isEmpty }.joined(separator: "/")
+        guard let url = components?.url else {
+            throw LinuxServerClientError.invalidURL
+        }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 3
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return request
+    }
+
+    public static func fetchSnapshot(_ config: LinuxServerConfig) async -> Result<LinuxServerSnapshot, Error> {
+        do {
+            let request = try self.request(for: config, path: "/v1/snapshot")
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                return .failure(LinuxServerClientError.badStatus)
+            }
+            return .success(try self.decoder.decode(LinuxServerSnapshot.self, from: data))
+        } catch {
+            return .failure(error)
         }
     }
 }
 
-public struct RemoteHostBucket: Codable {
-    public let ts: String
-    public let status: String
-    public let uptime: Double
-    public let count: Int
+public enum LinuxServerClientError: LocalizedError {
+    case invalidURL
+    case missingToken
+    case badStatus
+
+    public var errorDescription: String? {
+        switch self {
+        case .invalidURL: return "Invalid URL"
+        case .missingToken: return "Missing token"
+        case .badStatus: return "Unexpected server response"
+        }
+    }
 }
 
 public class Remote: Module {
     private let settingsView: Settings
     private let popupView: Popup
     private var dataReader: DataReader?
-    
+    private var statusItems: [String: LinuxServerStatusItem] = [:]
+
     public init() {
         self.settingsView = Settings(.remote)
         self.popupView = Popup(.remote)
-        
+
         super.init(
             moduleType: .remote,
             popup: self.popupView,
-            settings: self.settingsView,
+            settings: self.settingsView
         )
-        
-        self.dataReader = DataReader(.remote) { [weak self] snapshot in
-            self?.callback(snapshot)
+
+        self.dataReader = DataReader(.remote) { [weak self] states in
+            self?.callback(states)
         }
-        
-        self.settingsView.toggleCallback = { [weak self] in
+
+        self.settingsView.changeCallback = { [weak self] in
+            self?.syncStatusItems(states: nil)
             self?.dataReader?.read()
         }
-        
-        NotificationCenter.default.addObserver(self, selector: #selector(self.handleRemoteState), name: .remoteState, object: nil)
-        
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(self.handleModuleToggle),
+            name: .toggleModule,
+            object: nil
+        )
+
         self.setReaders([self.dataReader])
     }
-    
+
     deinit {
-        NotificationCenter.default.removeObserver(self, name: .remoteState, object: nil)
+        NotificationCenter.default.removeObserver(self)
+        self.removeStatusItems()
     }
-    
-    @objc private func handleRemoteState(_ notification: Notification) {
-        guard let auth = notification.userInfo?["auth"] as? Bool else { return }
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.popupView.authorizationStatus(auth)
-            if auth {
-                self.dataReader?.read()
-            }
-        }
+
+    public override func willTerminate() {
+        self.removeStatusItems()
     }
-    
-    private func callback(_ snapshot: RemoteSnapshot?) {
-        guard let snapshot, self.enabled else { return }
-        
-        DispatchQueue.main.async(execute: {
-            self.popupView.callback(snapshot)
-        })
-        
-        self.menuBar.widgets.filter{ $0.isActive }.forEach { (w: SWidget) in
-            switch w.item {
-            case let widget as DotWidget:
-                widget.setValue(self.aggregateColor(snapshot))
-            default: break
-            }
+
+    @objc private func handleModuleToggle(_ notification: Notification) {
+        guard let module = notification.userInfo?["module"] as? String, module == self.name else { return }
+        if let state = notification.userInfo?["state"] as? Bool, !state {
+            self.removeStatusItems()
+        } else {
+            self.dataReader?.read()
         }
     }
-    
-    private func aggregateColor(_ snapshot: RemoteSnapshot) -> NSColor {
-        var up = 0, down = 0, total = 0
-        for m in snapshot.machines.filter({ $0.state }) where m.state {
-            total += 1
-            m.online ? (up += 1) : (down += 1)
+
+    private func callback(_ states: [LinuxServerState]?) {
+        guard self.enabled else { return }
+        let states = states ?? []
+        DispatchQueue.main.async {
+            self.popupView.callback(states)
+            self.syncStatusItems(states: states)
         }
-        for h in snapshot.hosts.filter({ $0.state }) where h.state {
-            total += 1
-            switch h.lastStatus?.lowercased() {
-            case "up": up += 1
-            case "down": down += 1
-            default: break
+    }
+
+    private func syncStatusItems(states: [LinuxServerState]?) {
+        let configs = LinuxServersStore.load().filter(\.enabled)
+        let validIDs = Set(configs.map(\.id))
+        for (id, item) in self.statusItems where !validIDs.contains(id) {
+            item.remove()
+            self.statusItems.removeValue(forKey: id)
+        }
+
+        for config in configs where self.statusItems[config.id] == nil {
+            self.statusItems[config.id] = LinuxServerStatusItem(module: self.name, config: config) { [weak self] serverID in
+                self?.popupView.select(serverID: serverID)
             }
         }
-        guard total > 0 else { return .systemGray }
-        if up == total { return .systemGreen }
-        if down == total { return .systemRed }
-        return .systemOrange
+
+        guard let states else { return }
+        for state in states {
+            self.statusItems[state.config.id]?.update(state)
+        }
+    }
+
+    private func removeStatusItems() {
+        self.statusItems.values.forEach { $0.remove() }
+        self.statusItems.removeAll()
     }
 }
 
-extension SystemStats {
-    internal func fetchMachines() async -> [RemoteMachine] {
-        await self.fetchListAsync(path: "/v1/machine")
+private final class LinuxServerStatusItem {
+    private let module: String
+    private var config: LinuxServerConfig
+    private let statusItem: NSStatusItem
+    private let view: LinuxServerTrayView
+    private let select: (String) -> Void
+
+    init(module: String, config: LinuxServerConfig, select: @escaping (String) -> Void) {
+        self.module = module
+        self.config = config
+        self.select = select
+        self.view = LinuxServerTrayView(config: config)
+        self.statusItem = NSStatusBar.system.statusItem(withLength: self.view.frame.width)
+        self.statusItem.autosaveName = "\(module)_\(config.id)"
+        self.statusItem.button?.image = NSImage()
+        self.statusItem.button?.toolTip = config.displayName
+        self.statusItem.button?.addSubview(self.view)
+        self.view.onClick = { [weak self] in self?.open() }
     }
-    internal func fetchHosts(historyWindow: String = "") async -> [RemoteHost] {
-        let path = historyWindow.isEmpty ? "/v1/host" : "/v1/host?history=\(historyWindow)"
-        return await self.fetchListAsync(path: path)
-    }
-    internal func fetchGroups() async -> [RemoteGroup] {
-        await self.fetchListAsync(path: "/v1/group")
-    }
-    internal func fetchAccountOrder() async -> RemoteAccountOrder {
-        guard let request = self.authorizedGET("/v1/account") else {
-            return RemoteAccountOrder(machines: [], hosts: [])
+
+    func update(_ state: LinuxServerState) {
+        self.config = state.config
+        self.statusItem.button?.toolTip = state.config.displayName
+        self.view.update(state)
+        if self.statusItem.length != self.view.frame.width {
+            self.statusItem.length = self.view.frame.width
         }
-        guard let (data, response) = try? await self.session.data(for: request),
-              let http = response as? HTTPURLResponse, http.statusCode == 200,
-              let account = try? JSONDecoder().decode(RemoteAccountResponse.self, from: data) else {
-            return RemoteAccountOrder(machines: [], hosts: [])
-        }
-        return RemoteAccountOrder(machines: account.settings?.order ?? [], hosts: account.settings?.hostsOrder ?? [])
     }
-    
-    private func fetchListAsync<T: Decodable>(path: String) async -> [T] {
-        guard let request = self.authorizedGET(path) else { return [] }
-        guard let (data, response) = try? await self.session.data(for: request),
-              let http = response as? HTTPURLResponse, http.statusCode == 200 else { return [] }
-        if let list = try? JSONDecoder().decode([T].self, from: data) { return list }
-        debug("fetch \(path) decode failed: \(String(data: data, encoding: .utf8) ?? "")")
-        return []
+
+    func remove() {
+        NSStatusBar.system.removeStatusItem(self.statusItem)
     }
-    
-    private func authorizedGET(_ path: String) -> URLRequest? {
-        guard self.isAuthorized, let url = URL(string: "\(SystemStats.host)\(path)") else { return nil }
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("Bearer \(self.auth.accessToken)", forHTTPHeaderField: "Authorization")
-        return request
-    }
-    
-    internal func fetchMachines(completion: @escaping ([RemoteMachine]) -> Void) {
-        self.fetchList(path: "/v1/machine", completion: completion)
-    }
-    
-    internal func fetchHosts(historyWindow: String? = nil, completion: @escaping ([RemoteHost]) -> Void) {
-        var path = "/v1/host"
-        if let window = historyWindow, !window.isEmpty {
-            path += "?history=\(window)"
-        }
-        self.fetchList(path: path, completion: completion)
-    }
-    
-    internal func fetchGroups(completion: @escaping ([RemoteGroup]) -> Void) {
-        self.fetchList(path: "/v1/group", completion: completion)
-    }
-    
-    internal func fetchAccountOrder(completion: @escaping (RemoteAccountOrder) -> Void) {
-        guard self.isAuthorized, let url = URL(string: "\(SystemStats.host)/v1/account") else {
-            DispatchQueue.main.async { completion(RemoteAccountOrder(machines: [], hosts: [])) }
-            return
-        }
-        
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("Bearer \(self.auth.accessToken)", forHTTPHeaderField: "Authorization")
-        
-        self.session.dataTask(with: request) { data, response, _ in
-            guard let data, let http = response as? HTTPURLResponse, http.statusCode == 200,
-                  let account = try? JSONDecoder().decode(RemoteAccountResponse.self, from: data) else {
-                DispatchQueue.main.async { completion(RemoteAccountOrder(machines: [], hosts: [])) }
-                return
-            }
-            let order = RemoteAccountOrder(
-                machines: account.settings?.order ?? [],
-                hosts: account.settings?.hostsOrder ?? []
-            )
-            DispatchQueue.main.async { completion(order) }
-        }.resume()
-    }
-    
-    internal func fetchList<T: Decodable>(path: String, completion: @escaping ([T]) -> Void) {
-        guard self.isAuthorized, let url = URL(string: "\(SystemStats.host)\(path)") else {
-            DispatchQueue.main.async { completion([]) }
-            return
-        }
-        
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("Bearer \(self.auth.accessToken)", forHTTPHeaderField: "Authorization")
-        
-        self.session.dataTask(with: request) { data, response, _ in
-            guard let data, let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-                DispatchQueue.main.async { completion([]) }
-                return
-            }
-            
-            if let list = try? JSONDecoder().decode([T].self, from: data) {
-                DispatchQueue.main.async { completion(list) }
-                return
-            }
-            
-            let body = String(data: data, encoding: .utf8) ?? ""
-            debug("fetch \(path) decode failed: \(body)")
-            DispatchQueue.main.async { completion([]) }
-        }.resume()
+
+    private func open() {
+        guard let button = self.statusItem.button, let window = button.window else { return }
+        self.select(self.config.id)
+        NotificationCenter.default.post(name: .togglePopup, object: nil, userInfo: [
+            "module": self.module,
+            "origin": window.frame.origin,
+            "center": window.frame.width / 2
+        ])
     }
 }
 
-extension RemoteMachine {
-    public func applying(_ update: RemoteUpdate) -> RemoteMachine {
-        RemoteMachine(
-            id: self.id,
-            name: self.name,
-            online: update.online ?? self.online,
-            groupID: self.groupID,
-            lastSeenTS: update.lastSeenTS ?? self.lastSeenTS,
-            details: self.details,
-            modules: update.modules ?? self.modules
-        )
-    }
-}
+private final class LinuxServerTrayView: NSView {
+    var onClick: (() -> Void)?
+    private var state: LinuxServerState?
+    private var config: LinuxServerConfig
 
-public final class RemoteMachineStream: NSObject, URLSessionDataDelegate {
-    private let machineID: String
-    private let onUpdate: (RemoteUpdate) -> Void
-    
-    private var session: URLSession?
-    private var task: URLSessionDataTask?
-    private var buffer = Data()
-    private var stopped = false
-    private var reconnectAttempts = 0
-    
-    public init(machineID: String, onUpdate: @escaping (RemoteUpdate) -> Void) {
-        self.machineID = machineID
-        self.onUpdate = onUpdate
-        super.init()
+    init(config: LinuxServerConfig) {
+        self.config = config
+        super.init(frame: NSRect(x: 0, y: 0, width: 92, height: Constants.Widget.height))
+        self.wantsLayer = true
     }
-    
-    public func start() {
-        self.stopped = false
-        self.openConnection()
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
     }
-    
-    public func stop() {
-        self.stopped = true
-        self.task?.cancel()
-        self.task = nil
-        self.session?.invalidateAndCancel()
-        self.session = nil
-        self.buffer.removeAll()
-    }
-    
-    private func openConnection() {
-        guard !self.stopped, SystemStats.shared.isAuthorized, let url = URL(string: "\(SystemStats.host)/v1/machine/\(self.machineID)/sse") else { return }
-        
-        let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = .infinity
-        config.timeoutIntervalForResource = .infinity
-        let session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
-        self.session = session
-        
-        var request = URLRequest(url: url)
-        request.setValue("Bearer \(SystemStats.shared.auth.accessToken)", forHTTPHeaderField: "Authorization")
-        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let task = session.dataTask(with: request)
-        self.task = task
-        task.resume()
-    }
-    
-    public func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-        self.buffer.append(data)
-        let separator = Data("\n\n".utf8)
-        while let range = self.buffer.range(of: separator) {
-            let frame = self.buffer.subdata(in: 0..<range.lowerBound)
-            self.buffer.removeSubrange(0..<range.upperBound)
-            self.parseFrame(frame)
+
+    func update(_ state: LinuxServerState) {
+        self.state = state
+        self.config = state.config
+        DispatchQueue.main.async {
+            self.needsDisplay = true
         }
     }
-    
-    public func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        guard !self.stopped else { return }
-        let delay = min(pow(2.0, Double(self.reconnectAttempts)), 60.0)
-        self.reconnectAttempts += 1
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            guard let self, !self.stopped else { return }
-            self.openConnection()
+
+    override func mouseDown(with event: NSEvent) {
+        self.onClick?()
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        let name = String(self.config.displayName.prefix(12))
+        let online = self.state?.online ?? false
+        let snapshot = self.state?.snapshot
+        let titleColor: NSColor = online ? .labelColor : .systemRed
+        let muted = NSColor.secondaryLabelColor
+
+        drawText(name, x: 3, y: 12, width: self.bounds.width - 6, size: 7, color: titleColor, weight: .semibold)
+        if let snapshot {
+            drawText("C \(Int(snapshot.cpu.usagePercent.rounded()))", x: 3, y: 1, width: 24, size: 10, color: usageColor(snapshot.cpu.usagePercent), weight: .regular)
+            drawText("M \(Int(snapshot.memory.usagePercent.rounded()))", x: 31, y: 1, width: 24, size: 10, color: usageColor(snapshot.memory.usagePercent), weight: .regular)
+            drawText("D \(Int(snapshot.diskUsagePercent.rounded()))", x: 59, y: 1, width: 30, size: 10, color: usageColor(snapshot.diskUsagePercent), weight: .regular)
+        } else {
+            drawText("offline", x: 3, y: 1, width: self.bounds.width - 6, size: 10, color: muted, weight: .regular)
         }
     }
-    
-    private func parseFrame(_ frame: Data) {
-        guard let text = String(data: frame, encoding: .utf8) else { return }
-        for line in text.components(separatedBy: "\n") {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard trimmed.hasPrefix("data:") else { continue }
-            let jsonText = String(trimmed.dropFirst(5)).trimmingCharacters(in: .whitespaces)
-            guard !jsonText.isEmpty,
-                  let jsonData = jsonText.data(using: .utf8),
-                  let update = try? JSONDecoder().decode(RemoteUpdate.self, from: jsonData) else { continue }
-            self.reconnectAttempts = 0
-            let cb = self.onUpdate
-            DispatchQueue.main.async { cb(update) }
-        }
+
+    private func drawText(_ value: String, x: CGFloat, y: CGFloat, width: CGFloat, size: CGFloat, color: NSColor, weight: NSFont.Weight) {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .left
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedSystemFont(ofSize: size, weight: weight),
+            .foregroundColor: color,
+            .paragraphStyle: paragraph
+        ]
+        NSAttributedString(string: value, attributes: attributes).draw(in: NSRect(x: x, y: y, width: width, height: size + 2))
+    }
+
+    private func usageColor(_ percent: Double) -> NSColor {
+        if percent >= 90 { return .systemRed }
+        if percent >= 75 { return .systemOrange }
+        return .controlAccentColor
     }
 }

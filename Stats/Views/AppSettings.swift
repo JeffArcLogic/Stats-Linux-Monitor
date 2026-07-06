@@ -14,7 +14,7 @@ import Kit
 
 class ApplicationSettings: NSStackView {
     private var updateIntervalValue: String {
-        Store.shared.string(key: "update-interval", defaultValue: AppUpdateInterval.silent.rawValue)
+        Store.shared.string(key: "update-interval", defaultValue: AppUpdateInterval.never.rawValue)
     }
     
     private var temperatureUnitsValue: String {
