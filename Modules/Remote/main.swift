@@ -444,6 +444,12 @@ private final class LinuxServerStatusItem: NSObject {
         self.statusItem.button?.addSubview(self.view)
         self.view.onClick = { [weak self] in self?.open() }
         self.view.onRightClick = { [weak self] event in self?.menu(event) }
+        self.view.onWidthChange = { [weak self] in
+            guard let self else { return }
+            if self.statusItem.length != self.view.frame.width {
+                self.statusItem.length = self.view.frame.width
+            }
+        }
     }
 
     func update(_ state: LinuxServerState) {
@@ -491,31 +497,39 @@ private final class LinuxServerStatusItem: NSObject {
 }
 
 private final class LinuxServerTrayView: NSView {
-    private struct Metric {
-        let label: String
-        let value: Double
-    }
-
     private enum Layout {
-        static let metricWidth: CGFloat = 31
         static let maxNameWidth: CGFloat = 74
         static let sidePadding: CGFloat = 3
         static let gap: CGFloat = 4
-        static let metricLabelY: CGFloat = 12
-        static let metricValueY: CGFloat = 1
         static let statusDotSize: CGFloat = 4
         static let statusDotGap: CGFloat = 4
     }
 
     var onClick: (() -> Void)?
     var onRightClick: ((NSEvent) -> Void)?
+    var onWidthChange: (() -> Void)?
     private var state: LinuxServerState?
     private var config: LinuxServerConfig
+    private let cpuWidget = Mini(title: "CPU", config: LinuxServerTrayView.miniConfig(moduleName: "CPU"))
+    private let ramWidget = Mini(title: "RAM", config: LinuxServerTrayView.miniConfig(moduleName: "RAM"))
+    private let diskWidget = Mini(title: "Disk", config: LinuxServerTrayView.miniConfig(moduleName: "Disk"))
+    private var metricWidgets: [Mini] {
+        [self.cpuWidget, self.ramWidget, self.diskWidget]
+    }
 
     init(config: LinuxServerConfig) {
         self.config = config
-        super.init(frame: NSRect(x: 0, y: 0, width: Self.width(for: config.displayName), height: Constants.Widget.height))
+        super.init(frame: NSRect(x: 0, y: 0, width: 0, height: Constants.Widget.height))
         self.wantsLayer = true
+        self.metricWidgets.forEach { widget in
+            widget.onClick = { [weak self] in self?.onClick?() }
+            widget.widthHandler = { [weak self] in
+                self?.layoutContent()
+                self?.onWidthChange?()
+            }
+            self.addSubview(widget)
+        }
+        self.layoutContent()
     }
 
     required init?(coder: NSCoder) {
@@ -526,7 +540,15 @@ private final class LinuxServerTrayView: NSView {
         self.state = state
         self.config = state.config
         let updateView = {
-            self.setFrameSize(NSSize(width: Self.width(for: state.config.displayName), height: Constants.Widget.height))
+            if let snapshot = state.snapshot {
+                self.metricWidgets.forEach { $0.isHidden = false }
+                self.cpuWidget.setValue(snapshot.cpu.usagePercent / 100)
+                self.ramWidget.setValue(snapshot.memory.usagePercent / 100)
+                self.diskWidget.setValue(snapshot.diskUsagePercent / 100)
+            } else {
+                self.metricWidgets.forEach { $0.isHidden = true }
+            }
+            self.layoutContent()
             self.needsDisplay = true
         }
         if Thread.isMainThread {
@@ -558,7 +580,6 @@ private final class LinuxServerTrayView: NSView {
         let muted = self.mutedTextColor
         let dotColor: NSColor = online ? .systemGreen : .systemRed
         let nameWidth = self.nameWidth(for: name)
-        let metricStart = Layout.sidePadding + nameWidth + Layout.gap
 
         self.drawStatusDot(color: dotColor)
         drawText(
@@ -572,47 +593,15 @@ private final class LinuxServerTrayView: NSView {
             alignment: .left
         )
 
-        if let snapshot {
-            self.drawMetrics([
-                Metric(label: "CPU", value: snapshot.cpu.usagePercent),
-                Metric(label: "RAM", value: snapshot.memory.usagePercent),
-                Metric(label: "Disk", value: snapshot.diskUsagePercent)
-            ], startX: metricStart)
-        } else {
+        if snapshot == nil {
             drawText(
                 "offline",
-                x: metricStart,
+                x: Layout.sidePadding + nameWidth + Layout.gap,
                 y: 5,
-                width: self.bounds.width - metricStart - Layout.sidePadding,
+                width: self.metricWidth,
                 size: 10,
                 color: muted,
                 weight: .semibold,
-                alignment: .center
-            )
-        }
-    }
-
-    private func drawMetrics(_ metrics: [Metric], startX: CGFloat) {
-        for (index, metric) in metrics.enumerated() {
-            let x = startX + (CGFloat(index) * Layout.metricWidth)
-            drawText(
-                metric.label,
-                x: x,
-                y: Layout.metricLabelY,
-                width: Layout.metricWidth,
-                size: 7,
-                color: self.mutedTextColor,
-                weight: .light,
-                alignment: .center
-            )
-            drawText(
-                "\(Int(metric.value.rounded()))%",
-                x: x,
-                y: Layout.metricValueY,
-                width: Layout.metricWidth,
-                size: 12,
-                color: usageColor(metric.value),
-                weight: .regular,
                 alignment: .center
             )
         }
@@ -629,10 +618,17 @@ private final class LinuxServerTrayView: NSView {
         NSBezierPath(ovalIn: rect).fill()
     }
 
-    private static func width(for name: String) -> CGFloat {
-        let metricsWidth = Layout.metricWidth * 3
-        let nameWidth = min(Layout.maxNameWidth, max(24, Self.nameSize(name).width + Layout.statusDotSize + Layout.statusDotGap + 1))
-        return Layout.sidePadding + nameWidth + Layout.gap + metricsWidth + Layout.sidePadding
+    private func layoutContent() {
+        let nameWidth = self.nameWidth(for: self.config.displayName)
+        var x = Layout.sidePadding + nameWidth + Layout.gap
+        self.metricWidgets.forEach { widget in
+            widget.setFrameOrigin(NSPoint(x: x, y: Constants.Widget.margin.y))
+            if !widget.isHidden {
+                x += widget.frame.width
+            }
+        }
+        let width = Layout.sidePadding + nameWidth + Layout.gap + self.metricWidth + Layout.sidePadding
+        self.setFrameSize(NSSize(width: width, height: Constants.Widget.height))
     }
 
     private func nameWidth(for name: String) -> CGFloat {
@@ -644,6 +640,40 @@ private final class LinuxServerTrayView: NSView {
             .font: NSFont.monospacedSystemFont(ofSize: 7, weight: .semibold)
         ]
         return NSAttributedString(string: name, attributes: attributes).size()
+    }
+
+    private var metricWidth: CGFloat {
+        let visible = self.metricWidgets.filter { !$0.isHidden }
+        if visible.isEmpty {
+            return 54
+        }
+        return visible.reduce(0) { $0 + $1.frame.width }
+    }
+
+    private static func miniConfig(moduleName: String) -> NSDictionary? {
+        if let url = Bundle.main.privateFrameworksURL?
+            .appendingPathComponent("\(moduleName).framework")
+            .appendingPathComponent("Resources/config.plist"),
+           let config = Self.miniConfig(at: url) {
+            return config
+        }
+
+        for bundle in Bundle.allFrameworks where bundle.bundleURL.lastPathComponent == "\(moduleName).framework" {
+            if let url = bundle.url(forResource: "config", withExtension: "plist"),
+               let config = Self.miniConfig(at: url) {
+                return config
+            }
+        }
+
+        return nil
+    }
+
+    private static func miniConfig(at url: URL) -> NSDictionary? {
+        guard let moduleConfig = NSDictionary(contentsOf: url),
+              let widgets = moduleConfig["Widgets"] as? NSDictionary else {
+            return nil
+        }
+        return widgets[widget_t.mini.rawValue] as? NSDictionary
     }
 
     private func drawText(
@@ -673,11 +703,5 @@ private final class LinuxServerTrayView: NSView {
 
     private var mutedTextColor: NSColor {
         isDarkMode ? NSColor.white.withAlphaComponent(0.72) : .secondaryLabelColor
-    }
-
-    private func usageColor(_ percent: Double) -> NSColor {
-        if percent >= 90 { return .systemRed }
-        if percent >= 75 { return .systemOrange }
-        return self.primaryTextColor
     }
 }

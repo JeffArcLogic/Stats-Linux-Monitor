@@ -83,11 +83,9 @@ internal class Settings: NSStackView, Settings_v, NSTableViewDelegate, NSTableVi
     }
 
     private func setupForm() {
-        self.nameField.delegate = self
-        self.urlField.delegate = self
-        self.tokenField.delegate = self
-        self.urlField.placeholderString = "http://server.tailnet-name.ts.net:9783"
-        self.tokenField.placeholderString = localizedString("Bearer token")
+        self.configureField(self.nameField, placeholder: localizedString("Server name"))
+        self.configureField(self.urlField, placeholder: "http://server.tailnet-name.ts.net:9783")
+        self.configureField(self.tokenField, placeholder: localizedString("Bearer token"))
 
         self.enabledField.target = self
         self.enabledField.action = #selector(self.toggleSelectedEnabled)
@@ -104,6 +102,19 @@ internal class Settings: NSStackView, Settings_v, NSTableViewDelegate, NSTableVi
             PreferencesRow(localizedString("Display"), component: self.displayMode),
             PreferencesRow("", component: self.enabledField)
         ]))
+    }
+
+    private func configureField(_ field: NSTextField, placeholder: String) {
+        field.widthAnchor.constraint(equalToConstant: 250).isActive = true
+        field.font = NSFont.systemFont(ofSize: 12, weight: .regular)
+        field.textColor = .textColor
+        field.isEditable = true
+        field.isSelectable = true
+        field.usesSingleLineMode = true
+        field.maximumNumberOfLines = 1
+        field.focusRingType = .none
+        field.delegate = self
+        field.placeholderString = placeholder
     }
 
     private func footer() -> NSView {
@@ -224,7 +235,7 @@ internal class Settings: NSStackView, Settings_v, NSTableViewDelegate, NSTableVi
     }
 
     @objc private func addServer() {
-        let server = LinuxServerConfig(name: "New server", url: "http://server.tailnet-name.ts.net:9783")
+        let server = LinuxServerConfig(name: localizedString("New server"), url: "http://server.tailnet-name.ts.net:9783")
         self.servers.append(server)
         self.persist()
         self.tableView.reloadData()
