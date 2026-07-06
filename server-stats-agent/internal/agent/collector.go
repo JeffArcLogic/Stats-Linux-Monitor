@@ -48,17 +48,17 @@ func (c *Collector) Snapshot() (Snapshot, error) {
 	}
 
 	snapshot := Snapshot{
-		Schema:     "stats.linux.snapshot.v1",
-		Host:       HostInfo{Name: host, OS: readOSName(), Kernel: readKernel(), Platform: runtime.GOARCH},
-		Timestamp:  now,
-		UptimeSec:  readUptime(),
-		Load:       readLoad(),
-		Memory:     MemoryStats{},
-		Swap:       SwapStats{},
-		Disks:      readDisks(),
+		Schema:      "stats.linux.snapshot.v1",
+		Host:        HostInfo{Name: host, OS: readOSName(), Kernel: readKernel(), Platform: runtime.GOARCH},
+		Timestamp:   now,
+		UptimeSec:   readUptime(),
+		Load:        readLoad(),
+		Memory:      MemoryStats{},
+		Swap:        SwapStats{},
+		Disks:       readDisks(),
 		Temperature: readSensors(),
-		GPU:        readNVIDIA(),
-		Processes:  readProcesses(8),
+		GPU:         readNVIDIA(),
+		Processes:   readProcesses(8),
 	}
 
 	snapshot.CPU = c.readCPU()

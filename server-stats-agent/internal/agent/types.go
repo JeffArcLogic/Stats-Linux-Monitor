@@ -3,7 +3,7 @@ package agent
 import "time"
 
 type Snapshot struct {
-	Schema       string        `json:"schema"`
+	Schema      string        `json:"schema"`
 	Host        HostInfo      `json:"host"`
 	Timestamp   time.Time     `json:"timestamp"`
 	UptimeSec   float64       `json:"uptimeSec"`
@@ -52,11 +52,11 @@ type SwapStats struct {
 
 type DiskStats struct {
 	Mountpoint   string  `json:"mountpoint"`
-	Device      string  `json:"device"`
-	FSType      string  `json:"fsType"`
-	TotalBytes  uint64  `json:"totalBytes"`
-	UsedBytes   uint64  `json:"usedBytes"`
-	FreeBytes   uint64  `json:"freeBytes"`
+	Device       string  `json:"device"`
+	FSType       string  `json:"fsType"`
+	TotalBytes   uint64  `json:"totalBytes"`
+	UsedBytes    uint64  `json:"usedBytes"`
+	FreeBytes    uint64  `json:"freeBytes"`
 	UsagePercent float64 `json:"usagePercent"`
 }
 
@@ -74,11 +74,11 @@ type SensorStats struct {
 }
 
 type GPUStats struct {
-	Name         string  `json:"name"`
-	UsagePercent float64 `json:"usagePercent"`
-	MemoryUsedMB uint64  `json:"memoryUsedMB"`
-	MemoryTotalMB uint64 `json:"memoryTotalMB"`
-	TempCelsius  float64 `json:"tempCelsius"`
+	Name          string  `json:"name"`
+	UsagePercent  float64 `json:"usagePercent"`
+	MemoryUsedMB  uint64  `json:"memoryUsedMB"`
+	MemoryTotalMB uint64  `json:"memoryTotalMB"`
+	TempCelsius   float64 `json:"tempCelsius"`
 }
 
 type ProcessInfo struct {
