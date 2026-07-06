@@ -1,13 +1,40 @@
-# Stats
+# Stats Linux Monitor
+
+This is a fork of [exelban/stats](https://github.com/exelban/stats) focused on monitoring Linux servers from the macOS menu bar.
+
+The original Stats app remains the foundation for local macOS monitoring, menu bar items, settings, popups, widgets, and the overall app structure. This fork replaces the original hosted remote feature with direct Linux server monitoring over authenticated HTTP endpoints, designed for servers reachable through Tailscale or another trusted private network.
+
+## What changed in this fork
+
+- Added a lightweight Go `server-stats-agent` for Linux hosts.
+- Added authenticated Linux server endpoints: `GET /v1/health`, `GET /v1/snapshot`, and `GET /v1/stream`.
+- Replaced the original remote module with a self-hosted **Linux Servers** module.
+- Added one macOS menu bar item per configured Linux server.
+- Added server settings for name, URL, token, enabled state, ordering, and display mode.
+- Store server bearer tokens in macOS Keychain.
+- Render Stats-style server popups with CPU, memory, disk, network, optional GPU/sensors, uptime, and top processes.
+- Keep the existing local macOS Stats modules intact.
+
+## Goals and limitations
+
+This fork is intentionally different from upstream Stats:
+
+- It is focused on small personal or homelab fleets, not a hosted account-based remote monitoring service.
+- It expects each Linux server to run the bundled agent and be reachable directly, ideally through Tailscale.
+- It does not try to be Prometheus, Grafana, or a central metrics database.
+- It is not intended to preserve upstream's original hosted remote feature.
+- Upstream Stats releases and Homebrew packages do not include this Linux server monitoring work.
 
 <a href="https://github.com/exelban/stats/releases"><p align="center"><img src="https://github.com/exelban/stats/raw/master/Stats/Supporting%20Files/Assets.xcassets/AppIcon.appiconset/icon_256x256.png" width="120"></p></a>
 
 [![Stats](https://serhiy.s3.eu-central-1.amazonaws.com/Github_repo/stats/menus%3Fv2.3.2.png?v1)](https://github.com/exelban/stats/releases)
 [![Stats](https://serhiy.s3.eu-central-1.amazonaws.com/Github_repo/stats/popups%3Fv2.3.2.png?v3)](https://github.com/exelban/stats/releases)
 
-macOS system monitor in your menu bar
+macOS and Linux server monitor in your menu bar.
 
 ## Installation
+This fork currently needs to be built from source with Xcode. The links below are for upstream Stats and are kept for historical context only; they do not install this fork's Linux server monitoring module.
+
 ### Manual
 You can download the latest version [here](https://github.com/exelban/stats/releases/latest/download/Stats.dmg).
 This will download a file called `Stats.dmg`. Open it and move the app to the application folder.
@@ -25,7 +52,9 @@ Legacy version for older systems could be found [here](https://mac-stats.com/dow
 Stats is supported on the released macOS version starting from macOS 12 (Monterey).
 
 ## Features
-Stats is an application that allows you to monitor your macOS system.
+Stats Linux Monitor lets you monitor your Mac and configured Linux servers from the macOS menu bar.
+
+Local macOS modules inherited from upstream Stats:
 
  - CPU utilization
  - GPU utilization
@@ -37,6 +66,21 @@ Stats is an application that allows you to monitor your macOS system.
  - Sensors information (Temperature/Voltage/Power)
  - Bluetooth devices
  - Multiple time zone clock
+
+Linux server monitoring added by this fork:
+
+ - Per-server menu bar status
+ - CPU utilization and load
+ - Memory and swap usage
+ - Disk capacity and utilization
+ - Network throughput
+ - Uptime and kernel details
+ - Top processes
+ - Temperature sensors when available
+ - Optional NVIDIA GPU metrics when `nvidia-smi` is available
+ - Offline/error state with retry backoff
+
+See [LINUX_SERVERS.md](./LINUX_SERVERS.md) for agent setup and server configuration.
 
 ## FAQs
 
