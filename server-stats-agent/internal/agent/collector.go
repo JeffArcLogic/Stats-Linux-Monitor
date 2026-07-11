@@ -230,24 +230,91 @@ func diskUsageFromStatfs(blocks, bfree, bavail uint64, bsize int64) (uint64, uin
 }
 
 func readSensors() []SensorStats {
+	return readSensorsFrom(
+		"/sys/class/hwmon/hwmon*/temp*_input",
+		"/sys/class/thermal/thermal_zone*/temp",
+	)
+}
+
+func readSensorsFrom(hwmonPattern, thermalPattern string) []SensorStats {
 	var out []SensorStats
-	paths, _ := filepath.Glob("/sys/class/thermal/thermal_zone*/temp")
+
+	// Most hardware monitoring drivers (coretemp, k10temp, nvme, etc.) expose
+	// temperatures through hwmon rather than the thermal-zone interface.
+	paths, _ := filepath.Glob(hwmonPattern)
 	for _, path := range paths {
-		data, err := os.ReadFile(path)
-		if err != nil {
+		temp, ok := readMillidegreeTemperature(path)
+		if !ok {
 			continue
 		}
-		raw, err := strconv.ParseFloat(strings.TrimSpace(string(data)), 64)
-		if err != nil {
-			continue
+
+		dir := filepath.Dir(path)
+		base := strings.TrimSuffix(filepath.Base(path), "_input")
+		chip := readTrimmedFile(filepath.Join(dir, "name"))
+		label := readTrimmedFile(filepath.Join(dir, base+"_label"))
+		name := label
+		if name == "" {
+			name = base
 		}
-		name := filepath.Base(filepath.Dir(path))
-		if typeData, err := os.ReadFile(filepath.Join(filepath.Dir(path), "type")); err == nil {
-			name = strings.TrimSpace(string(typeData))
+		if chip != "" && !strings.EqualFold(chip, name) {
+			name = chip + " " + name
 		}
-		out = append(out, SensorStats{Name: name, TempCelsius: raw / 1000})
+		out = append(out, SensorStats{Name: name, TempCelsius: temp})
 	}
+
+	paths, _ = filepath.Glob(thermalPattern)
+	for _, path := range paths {
+		temp, ok := readMillidegreeTemperature(path)
+		if !ok {
+			continue
+		}
+		name := readTrimmedFile(filepath.Join(filepath.Dir(path), "type"))
+		if name == "" {
+			name = filepath.Base(filepath.Dir(path))
+		}
+		out = append(out, SensorStats{Name: name, TempCelsius: temp})
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return sensorPriority(out[i].Name) < sensorPriority(out[j].Name)
+	})
 	return out
+}
+
+func sensorPriority(name string) int {
+	name = strings.ToLower(name)
+	switch {
+	case strings.Contains(name, "cpu"), strings.Contains(name, "package"),
+		strings.Contains(name, "tctl"), strings.Contains(name, "tdie"):
+		return 0
+	case strings.Contains(name, "coretemp"), strings.Contains(name, "k10temp"):
+		return 1
+	case strings.Contains(name, "gpu"), strings.Contains(name, "nouveau"):
+		return 2
+	case strings.Contains(name, "nvme"):
+		return 4
+	default:
+		return 3
+	}
+}
+
+func readMillidegreeTemperature(path string) (float64, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, false
+	}
+	raw, err := strconv.ParseFloat(strings.TrimSpace(string(data)), 64)
+	if err != nil || raw < -273150 || raw > 300000 {
+		return 0, false
+	}
+	return raw / 1000, true
+}
+
+func readTrimmedFile(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
 }
 
 func readNVIDIA() []GPUStats {
